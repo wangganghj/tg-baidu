@@ -4,7 +4,11 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 # Mock third party modules if not present in standard library environment
-for mod in ["httpx", "aiosqlite", "yaml", "pydantic", "telegram", "telegram.ext", "telegram.constants", "rich", "rich.logging"]:
+for mod in [
+    "httpx", "aiosqlite", "yaml", "pydantic", "telegram", "telegram.ext",
+    "telegram.constants", "rich", "rich.logging", "fastapi", "fastapi.middleware.cors",
+    "fastapi.responses", "fastapi.templating", "uvicorn", "jinja2"
+]:
     if mod not in sys.modules:
         try:
             __import__(mod)

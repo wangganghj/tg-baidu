@@ -182,6 +182,22 @@ class BaiduClient:
                 )
             return files
 
+    async def list_directories(self, dir_path: str = "/") -> List[Dict[str, Any]]:
+        """List sub-directories in a specific path for the directory selector UI."""
+        items = await self.list_dir(dir_path=dir_path, order="name", desc=0)
+        dirs = []
+        for item in items:
+            if item.isdir:
+                dirs.append(
+                    {
+                        "fs_id": item.fs_id,
+                        "path": item.path,
+                        "name": item.server_filename,
+                        "mtime": item.server_mtime,
+                    }
+                )
+        return dirs
+
     async def create_dir(self, dir_path: str) -> Dict[str, Any]:
         """Create directory on Baidu Netdisk."""
         access_token = await self._get_access_token()

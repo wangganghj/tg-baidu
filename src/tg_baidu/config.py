@@ -55,12 +55,20 @@ class SystemConfig(BaseModel):
     max_concurrent_tasks: int = Field(default=3, description="Max concurrent transfer tasks")
 
 
+class WebConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Web dashboard UI")
+    host: str = Field(default="0.0.0.0", description="Web server bind host")
+    port: int = Field(default=8080, description="Web server bind port")
+    auth_password: str = Field(default="", description="Optional password protection for web UI")
+
+
 class Config(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     tmdb: TMDBConfig = Field(default_factory=TMDBConfig)
     baidu: BaiduConfig = Field(default_factory=BaiduConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     @classmethod
     def load(cls, config_path: Optional[str | Path] = None) -> Config:
@@ -110,6 +118,10 @@ class Config(BaseModel):
             "MEDIA_DEFAULT_DIR": ("media", "default_dir"),
             "SYSTEM_DATABASE_PATH": ("system", "database_path"),
             "SYSTEM_LOG_LEVEL": ("system", "log_level"),
+            "WEB_ENABLED": ("web", "enabled"),
+            "WEB_HOST": ("web", "host"),
+            "WEB_PORT": ("web", "port"),
+            "WEB_AUTH_PASSWORD": ("web", "auth_password"),
         }
 
         for env_var, (section, key) in env_mappings.items():

@@ -6,7 +6,13 @@
 
 ## ✨ Key Features
 
-- **Telegram Interface**:
+- **🌐 Web Management Dashboard (Port 8080)**:
+  - **Baidu OAuth2 Integration**: One-click OAuth login, auto callback redirect, real-time storage quota bar & VIP status.
+  - **Netdisk Directory Browser & Picker**: Browse remote cloud folders visually, create new folders, and set destination folders for Movies/TV shows with 1 click.
+  - **Bot & TMDB Settings Panel**: Live configuration for Bot Token, TMDB API Key, language, rename templates, and interactive TMDB search testing.
+  - **Task & Renaming History**: View transfer progress, file rename logs (original name ➡️ TMDB Plex path).
+  - **Web Quick Transfer**: Submit Baidu share links directly from the web interface.
+- **🤖 Telegram Interface**:
   - Automatically captures Baidu Netdisk share links and extraction passwords.
   - Interactive Inline Keyboards (Confirm, Switch Movie/TV, Manual Search, Cancel).
   - Real-time progress updates and completion notifications.

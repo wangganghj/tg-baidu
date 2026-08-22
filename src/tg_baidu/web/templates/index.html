@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>tg-baidu - 百度网盘智能转存与媒体重命名控制台</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0284c7',
+                            600: '#0369a1',
+                            700: '#075985',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans antialiased" x-data="dashboardApp()" x-init="initApp()" x-cloak>
+
+    <!-- Navigation Header -->
+    <header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-xl shadow-lg shadow-sky-500/20">
+                    🎬
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg text-white leading-tight">tg-baidu</h1>
+                    <p class="text-xs text-slate-400">百度网盘 & TMDB 智能媒体控制台</p>
+                </div>
+            </div>
+
+            <!-- Status Badges -->
+            <div class="hidden md:flex items-center space-x-4 text-xs">
+                <!-- Baidu Status -->
+                <div class="flex items-center px-3 py-1.5 rounded-full border"
+                     :class="auth.is_authenticated ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-400' : 'bg-rose-950/60 border-rose-500/30 text-rose-400'">
+                    <span class="w-2 h-2 rounded-full mr-2" :class="auth.is_authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'"></span>
+                    <span x-text="auth.is_authenticated ? (auth.user_info ? auth.user_info.baidu_name : '百度已连接') : '百度未绑定'"></span>
+                </div>
+                <!-- Telegram Bot Status -->
+                <div class="flex items-center px-3 py-1.5 rounded-full border bg-slate-700/50 border-slate-600 text-slate-300">
+                    <span class="w-2 h-2 rounded-full mr-2" :class="settings.telegram.raw_bot_token ? 'bg-sky-400' : 'bg-amber-400'"></span>
+                    <span>Telegram: <strong x-text="settings.telegram.raw_bot_token ? '已配置' : '未设置'"></strong></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-2 border-t border-slate-700/50 overflow-x-auto">
+            <button @click="currentTab = 'dashboard'"
+                    :class="currentTab === 'dashboard' ? 'border-sky-500 text-sky-400 bg-slate-700/40' : 'border-transparent text-slate-400 hover:text-slate-200'"
+                    class="py-3 px-4 text-sm font-medium border-b-2 transition-colors flex items-center space-x-2 whitespace-nowrap">
+                <span>📊</span>
+                <span>控制台与账号</span>
+            </button>
+            <button @click="currentTab = 'netdisk'"
+                    :class="currentTab === 'netdisk' ? 'border-sky-500 text-sky-400 bg-slate-700/40' : 'border-transparent text-slate-400 hover:text-slate-200'"
+                    class="py-3 px-4 text-sm font-medium border-b-2 transition-colors flex items-center space-x-2 whitespace-nowrap">
+                <span>📁</span>
+                <span>网盘目录选择器</span>
+            </button>
+            <button @click="currentTab = 'settings'"
+                    :class="currentTab === 'settings' ? 'border-sky-500 text-sky-400 bg-slate-700/40' : 'border-transparent text-slate-400 hover:text-slate-200'"
+                    class="py-3 px-4 text-sm font-medium border-b-2 transition-colors flex items-center space-x-2 whitespace-nowrap">
+                <span>⚙️</span>
+                <span>机器人与系统设置</span>
+            </button>
+            <button @click="currentTab = 'tasks'"
+                    :class="currentTab === 'tasks' ? 'border-sky-500 text-sky-400 bg-slate-700/40' : 'border-transparent text-slate-400 hover:text-slate-200'"
+                    class="py-3 px-4 text-sm font-medium border-b-2 transition-colors flex items-center space-x-2 whitespace-nowrap">
+                <span>📋</span>
+                <span>转存与重命名历史</span>
+                <span class="px-1.5 py-0.5 text-xs rounded-full bg-slate-700 text-slate-300" x-text="taskStats.total || 0"></span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        <!-- Toast Notifications -->
+        <div x-show="toast.show" 
+             x-transition:enter="transition ease-out duration-300"
+             x-transition:enter-start="opacity-0 transform translate-y-2"
+             x-transition:enter-end="opacity-100 transform translate-y-0"
+             x-transition:leave="transition ease-in duration-200"
+             x-transition:leave-start="opacity-100 transform translate-y-0"
+             x-transition:leave-end="opacity-0 transform translate-y-2"
+             class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-3 text-sm font-medium border"
+             :class="toast.type === 'success' ? 'bg-emerald-900/90 border-emerald-500 text-emerald-100' : 'bg-rose-900/90 border-rose-500 text-rose-100'">
+            <span x-text="toast.type === 'success' ? '✅' : '❌'"></span>
+            <span x-text="toast.message"></span>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 1: DASHBOARD & BAIDU ACCOUNT -->
+        <!-- ================================================================= -->
+        <div x-show="currentTab === 'dashboard'" class="space-y-6">
+            
+            <!-- Quick Submit Share Link Box -->
+            <div class="bg-gradient-to-r from-slate-800 to-slate-850 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                <h2 class="text-lg font-semibold text-white flex items-center space-x-2 mb-2">
+                    <span>⚡</span>
+                    <span>快速转存与 TMDB 智能重命名</span>
+                </h2>
+                <p class="text-sm text-slate-400 mb-4">直接粘贴百度网盘分享链接和提取码，系统将自动识别影视信息并重命名归档到对应目录。</p>
+                
+                <form @submit.prevent="submitShareTask()" class="grid grid-cols-1 md:grid-cols-12 gap-3">
+                    <div class="md:col-span-8">
+                        <input type="text" x-model="quickTask.share_url" required
+                               placeholder="粘贴百度网盘链接 (例如: https://pan.baidu.com/s/1xxxx 或 包含链接文字)"
+                               class="w-full bg-slate-900/90 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors">
+                    </div>
+                    <div class="md:col-span-2">
+                        <input type="text" x-model="quickTask.share_pwd"
+                               placeholder="提取码 (可选)"
+                               class="w-full bg-slate-900/90 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors">
+                    </div>
+                    <div class="md:col-span-2">
+                        <button type="submit" :disabled="submittingTask"
+                                class="w-full h-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium rounded-xl py-2.5 px-4 text-sm transition-all shadow-lg shadow-sky-600/20 flex items-center justify-center space-x-2">
+                            <span x-show="submittingTask" class="inline-block animate-spin">🔄</span>
+                            <span x-text="submittingTask ? '处理中...' : '立即转存'"></span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Stats & Account Overview Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <!-- Baidu Account Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="font-semibold text-white flex items-center space-x-2">
+                                <span>👤</span>
+                                <span>百度网盘账户</span>
+                            </h3>
+                            <template x-if="auth.is_authenticated && auth.user_info">
+                                <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                      x-text="auth.user_info.vip_label"></span>
+                            </template>
+                        </div>
+
+                        <template x-if="auth.is_authenticated && auth.user_info">
+                            <div class="flex items-center space-x-4 mb-6">
+                                <img :src="auth.user_info.avatar_url || 'https://pan.baidu.com/box-static/disk-header/image/default_avatar.png'"
+                                     class="w-16 h-16 rounded-2xl border-2 border-slate-600 shadow-md object-cover">
+                                <div>
+                                    <h4 class="font-bold text-lg text-white" x-text="auth.user_info.baidu_name"></h4>
+                                    <p class="text-xs text-slate-400">UK: <span x-text="auth.user_info.uk"></span></p>
+                                    <p class="text-xs text-emerald-400 mt-1 flex items-center">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-400 mr-1.5"></span>
+                                        已通过 OAuth2 授权接入
+                                    </p>
+                                </div>
+                            </div>
+                        </template>
+
+                        <template x-if="!auth.is_authenticated">
+                            <div class="py-6 text-center text-slate-400">
+                                <div class="text-4xl mb-2">🔒</div>
+                                <p class="text-sm font-medium">尚未连接百度网盘账号</p>
+                                <p class="text-xs text-slate-500 mt-1">请使用下方授权按钮进行绑定</p>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Auth Action Buttons -->
+                    <div class="space-y-2 pt-4 border-t border-slate-700/60">
+                        <template x-if="!auth.is_authenticated">
+                            <a :href="loginUrl" target="_blank"
+                               class="block w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 px-4 rounded-xl text-sm transition-colors shadow-lg shadow-blue-600/20">
+                                🔑 网页一键授权登录百度
+                            </a>
+                        </template>
+                        <template x-if="auth.is_authenticated">
+                            <button @click="logoutBaidu()"
+                                    class="w-full text-center bg-slate-700 hover:bg-rose-900/50 hover:text-rose-300 text-slate-300 font-medium py-2 px-4 rounded-xl text-xs transition-colors border border-slate-600 hover:border-rose-500/50">
+                                🚪 解除当前账号绑定
+                            </button>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Storage Quota Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="font-semibold text-white flex items-center space-x-2">
+                                <span>💽</span>
+                                <span>网盘存储容量</span>
+                            </h3>
+                            <template x-if="auth.quota">
+                                <span class="text-xs text-slate-400 font-mono" x-text="auth.quota.usage_percent + '%'"></span>
+                            </template>
+                        </div>
+
+                        <template x-if="auth.quota">
+                            <div class="space-y-4">
+                                <!-- Progress Bar -->
+                                <div>
+                                    <div class="w-full bg-slate-700 rounded-full h-3.5 overflow-hidden p-0.5">
+                                        <div class="h-full rounded-full transition-all duration-500"
+                                             :class="auth.quota.usage_percent > 90 ? 'bg-rose-500' : (auth.quota.usage_percent > 70 ? 'bg-amber-500' : 'bg-gradient-to-r from-sky-500 to-emerald-400')"
+                                             :style="'width: ' + auth.quota.usage_percent + '%'"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Breakdown -->
+                                <div class="grid grid-cols-2 gap-3 pt-2">
+                                    <div class="bg-slate-900/60 rounded-xl p-3 border border-slate-700/50">
+                                        <span class="text-xs text-slate-400 block">已用空间</span>
+                                        <span class="text-lg font-bold text-white font-mono" x-text="auth.quota.used_gb + ' GB'"></span>
+                                    </div>
+                                    <div class="bg-slate-900/60 rounded-xl p-3 border border-slate-700/50">
+                                        <span class="text-xs text-slate-400 block">剩余空间</span>
+                                        <span class="text-lg font-bold text-emerald-400 font-mono" x-text="auth.quota.free_gb + ' GB'"></span>
+                                    </div>
+                                </div>
+                                <p class="text-xs text-slate-500 text-center">总容量: <span class="font-mono text-slate-300" x-text="auth.quota.total_gb + ' GB'"></span></p>
+                            </div>
+                        </template>
+
+                        <template x-if="!auth.quota">
+                            <div class="py-8 text-center text-slate-500 text-sm">
+                                登录后即可实时查看网盘容量配额
+                            </div>
+                        </template>
+                    </div>
+
+                    <div class="pt-4 border-t border-slate-700/60 flex justify-between text-xs text-slate-400">
+                        <span>当前默认电影目录:</span>
+                        <span class="font-mono text-sky-400 truncate max-w-[150px]" x-text="settings.media.movie_dir"></span>
+                    </div>
+                </div>
+
+                <!-- Manual Code Input & Quick Auth Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
+                    <div>
+                        <h3 class="font-semibold text-white flex items-center space-x-2 mb-2">
+                            <span>🔐</span>
+                            <span>授权码手动绑定</span>
+                        </h3>
+                        <p class="text-xs text-slate-400 mb-4">若浏览器无法自动跳转回调，可在百度授权页面复制 <strong>Code 授权码</strong> 在此提交。</p>
+
+                        <form @submit.prevent="submitAuthCode()" class="space-y-3">
+                            <div>
+                                <input type="text" x-model="manualCode" required
+                                       placeholder="输入授权码 (Code)"
+                                       class="w-full bg-slate-900/90 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition-colors">
+                            </div>
+                            <button type="submit" :disabled="submittingCode"
+                                    class="w-full bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-medium py-2 px-4 rounded-xl text-sm transition-colors border border-slate-600">
+                                <span x-text="submittingCode ? '正在交换令牌...' : '提交授权码'"></span>
+                            </button>
+                        </form>
+                    </div>
+
+                    <div class="mt-4 pt-4 border-t border-slate-700/60 text-xs text-slate-400 flex items-center justify-between">
+                        <span>Token 状态:</span>
+                        <span class="text-emerald-400" x-text="auth.token_record && auth.token_record.has_refresh_token ? '自动续期中' : '静态配置'"></span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Task Statistics Cards -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-4 shadow-lg">
+                    <span class="text-xs text-slate-400 font-medium">总任务数</span>
+                    <h3 class="text-2xl font-bold text-white mt-1 font-mono" x-text="taskStats.total || 0"></h3>
+                </div>
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-4 shadow-lg">
+                    <span class="text-xs text-emerald-400 font-medium">已完成转存</span>
+                    <h3 class="text-2xl font-bold text-emerald-400 mt-1 font-mono" x-text="taskStats.completed || 0"></h3>
+                </div>
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-4 shadow-lg">
+                    <span class="text-xs text-sky-400 font-medium">处理中</span>
+                    <h3 class="text-2xl font-bold text-sky-400 mt-1 font-mono" x-text="taskStats.processing || 0"></h3>
+                </div>
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-4 shadow-lg">
+                    <span class="text-xs text-rose-400 font-medium">失败任务</span>
+                    <h3 class="text-2xl font-bold text-rose-400 mt-1 font-mono" x-text="taskStats.failed || 0"></h3>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 2: NETDISK DIRECTORY PICKER -->
+        <!-- ================================================================= -->
+        <div x-show="currentTab === 'netdisk'" class="space-y-6">
+            
+            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white flex items-center space-x-2">
+                            <span>📁</span>
+                            <span>百度网盘目录浏览器与指定选择器</span>
+                        </h2>
+                        <p class="text-sm text-slate-400 mt-1">可视化浏览网盘云端目录，并一键将当前选中的目录设为电影或剧集的转存归档位置。</p>
+                    </div>
+
+                    <!-- Configured Paths Status -->
+                    <div class="flex flex-wrap gap-2 text-xs">
+                        <div class="bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5">
+                            <span>🎬 电影目录:</span>
+                            <strong class="text-sky-400 font-mono" x-text="settings.media.movie_dir"></strong>
+                        </div>
+                        <div class="bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5">
+                            <span>📺 剧集目录:</span>
+                            <strong class="text-emerald-400 font-mono" x-text="settings.media.tv_dir"></strong>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Breadcrumbs Path Bar -->
+                <div class="bg-slate-900/90 border border-slate-700 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 mb-6">
+                    <div class="flex items-center space-x-2 text-sm overflow-x-auto py-1">
+                        <button @click="fetchDirectories('/')" class="text-sky-400 hover:underline font-medium">根目录 /</button>
+                        <template x-for="(part, idx) in currentPathParts" :key="idx">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-slate-600">/</span>
+                                <button @click="navigateToBreadcrumb(idx)" class="text-sky-400 hover:underline font-medium" x-text="part"></button>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Action Buttons for Current Path -->
+                    <div class="flex items-center space-x-2">
+                        <button @click="promptNewFolder()"
+                                class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium px-3 py-2 rounded-lg border border-slate-600 transition-colors">
+                            ➕ 新建文件夹
+                        </button>
+                        <button @click="setAsTarget('movie', currentNetdiskPath)"
+                                class="bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors shadow-md">
+                            🎬 设为电影目录
+                        </button>
+                        <button @click="setAsTarget('tv', currentNetdiskPath)"
+                                class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors shadow-md">
+                            📺 设为剧集目录
+                        </button>
+                        <button @click="fetchDirectories(currentNetdiskPath)"
+                                class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs p-2 rounded-lg border border-slate-600">
+                            🔄
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Directory Grid / List -->
+                <div class="min-h-[300px]">
+                    <template x-if="loadingDirs">
+                        <div class="flex items-center justify-center py-16 text-slate-400 space-x-2">
+                            <span class="animate-spin text-xl">🔄</span>
+                            <span>正在读取网盘目录...</span>
+                        </div>
+                    </template>
+
+                    <template x-if="!loadingDirs && netdiskDirs.length === 0">
+                        <div class="py-16 text-center text-slate-500">
+                            <div class="text-4xl mb-2">📂</div>
+                            <p class="text-sm">当前目录下没有子文件夹</p>
+                            <p class="text-xs mt-1">您可以点击上方 “新建文件夹” 或直接将当前路径设为目标目录。</p>
+                        </div>
+                    </template>
+
+                    <template x-if="!loadingDirs && netdiskDirs.length > 0">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            <template x-for="folder in netdiskDirs" :key="folder.path">
+                                <div class="bg-slate-900/60 hover:bg-slate-750 border border-slate-700/60 hover:border-sky-500/50 rounded-xl p-3.5 flex items-center justify-between group transition-all">
+                                    <div @click="fetchDirectories(folder.path)" class="flex items-center space-x-3 flex-1 cursor-pointer truncate mr-2">
+                                        <span class="text-2xl">📁</span>
+                                        <div class="truncate">
+                                            <h4 class="text-sm font-medium text-slate-200 group-hover:text-sky-400 truncate" x-text="folder.name"></h4>
+                                            <span class="text-xs text-slate-500 font-mono" x-text="folder.path"></span>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button @click.stop="setAsTarget('movie', folder.path)" title="设为电影目录"
+                                                class="p-1.5 rounded-lg bg-slate-800 hover:bg-sky-600 text-xs text-slate-300 hover:text-white">🎬</button>
+                                        <button @click.stop="setAsTarget('tv', folder.path)" title="设为剧集目录"
+                                                class="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-xs text-slate-300 hover:text-white">📺</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 3: SETTINGS -->
+        <!-- ================================================================= -->
+        <div x-show="currentTab === 'settings'" class="space-y-6">
+            
+            <form @submit.prevent="saveAllSettings()" class="space-y-6">
+
+                <!-- Telegram Configuration Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center space-x-2 border-b border-slate-700/60 pb-3">
+                        <span>🤖</span>
+                        <span>Telegram 机器人设置</span>
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Bot Token (@BotFather 提供)</label>
+                            <input type="password" x-model="settings.telegram.raw_bot_token"
+                                   placeholder="123456789:ABCdefGhIJKlmNoPQRstuVWXyz"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">主管理员 Telegram User ID</label>
+                            <input type="number" x-model="settings.telegram.admin_user_id"
+                                   placeholder="例如: 123456789"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TMDB Configuration Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center space-x-2 border-b border-slate-700/60 pb-3">
+                        <span>🎬</span>
+                        <span>TMDB (The Movie Database) 刮削设置</span>
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="md:col-span-2">
+                            <label class="block text-xs font-medium text-slate-300 mb-1">TMDB API Key (v3 或 v4 Read Access Token)</label>
+                            <input type="password" x-model="settings.tmdb.raw_api_key"
+                                   placeholder="申请地址: themoviedb.org/settings/api"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">首选刮削语言</label>
+                            <select x-model="settings.tmdb.language"
+                                    class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500">
+                                <option value="zh-CN">中文简体 (zh-CN)</option>
+                                <option value="zh-TW">中文繁體 (zh-TW)</option>
+                                <option value="en-US">English (en-US)</option>
+                                <option value="ja-JP">日本語 (ja-JP)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Live TMDB Test Search Box -->
+                    <div class="bg-slate-900/60 rounded-xl p-4 border border-slate-700/50 space-y-3">
+                        <span class="text-xs text-slate-400 font-medium block">🔍 测试 TMDB 搜索接口连通性:</span>
+                        <div class="flex space-x-2">
+                            <input type="text" x-model="tmdbTestQuery" placeholder="输入影视名称 (如: 奥本海默 或 繁花)"
+                                   class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white">
+                            <button type="button" @click="testTMDB()" :disabled="testingTMDB"
+                                    class="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded-lg text-xs text-white font-medium">
+                                <span x-text="testingTMDB ? '搜索中...' : '测试检索'"></span>
+                            </button>
+                        </div>
+                        <template x-if="tmdbTestResults.length > 0">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2">
+                                <template x-for="item in tmdbTestResults" :key="item.id">
+                                    <div class="bg-slate-800 p-2 rounded-lg border border-slate-700 flex items-center space-x-2 text-xs">
+                                        <img :src="item.poster_url || 'https://via.placeholder.com/40x60'" class="w-8 h-12 object-cover rounded">
+                                        <div class="truncate">
+                                            <strong class="text-white truncate block" x-text="item.title"></strong>
+                                            <span class="text-slate-400" x-text="(item.year || '未知') + ' · ' + (item.media_type === 'movie' ? '电影' : '剧集')"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Renaming Templates & Automation Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <h3 class="text-lg font-semibold text-white flex items-center space-x-2 border-b border-slate-700/60 pb-3">
+                        <span>🏷️</span>
+                        <span>Plex / Emby 媒体重命名模板</span>
+                    </h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">电影重命名格式模板</label>
+                            <input type="text" x-model="settings.media.movie_format"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                            <span class="text-xs text-slate-500 mt-1 block">支持占位符: {title}, {year}, {resolution}, {video_codec}, {ext}</span>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">电视剧重命名格式模板</label>
+                            <input type="text" x-model="settings.media.tv_format"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                            <span class="text-xs text-slate-500 mt-1 block">支持占位符: {title}, {year}, {season:02d}, {episode:02d}, {episode_title}, {resolution}, {ext}</span>
+                        </div>
+
+                        <!-- Toggles -->
+                        <div class="pt-2 flex flex-col sm:flex-row gap-4">
+                            <label class="flex items-center space-x-2 cursor-pointer">
+                                <input type="checkbox" x-model="settings.media.auto_transfer" class="rounded bg-slate-900 border-slate-700 text-sky-600 focus:ring-0">
+                                <span class="text-xs text-slate-300">自动转存 (识别到匹配后直接归档，无需 Telegram 按钮确认)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 cursor-pointer">
+                                <input type="checkbox" x-model="settings.media.cleanup_temp_dirs" class="rounded bg-slate-900 border-slate-700 text-sky-600 focus:ring-0">
+                                <span class="text-xs text-slate-300">完成整理后自动删除临时转存目录</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="flex justify-end">
+                    <button type="submit" :disabled="savingSettings"
+                            class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium py-3 px-8 rounded-xl text-sm transition-all shadow-lg shadow-sky-600/30 flex items-center space-x-2">
+                        <span x-show="savingSettings" class="animate-spin">🔄</span>
+                        <span x-text="savingSettings ? '正在保存...' : '💾 保存所有设置'"></span>
+                    </button>
+                </div>
+
+            </form>
+
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 4: TASKS & RENAMING HISTORY -->
+        <!-- ================================================================= -->
+        <div x-show="currentTab === 'tasks'" class="space-y-6">
+            
+            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white flex items-center space-x-2">
+                            <span>📋</span>
+                            <span>转存与重命名历史记录</span>
+                        </h2>
+                        <p class="text-sm text-slate-400 mt-1">查看所有链接的转存进度、TMDB 识别结果以及百度网盘重命名路径日志。</p>
+                    </div>
+
+                    <!-- Filter & Search -->
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select x-model="taskFilter.status" @change="fetchTasks()"
+                                class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none">
+                            <option value="ALL">全部状态</option>
+                            <option value="COMPLETED">已完成</option>
+                            <option value="PROCESSING">处理中</option>
+                            <option value="FAILED">失败</option>
+                        </select>
+                        <input type="text" x-model="taskFilter.search" @input.debounce.400ms="fetchTasks()"
+                               placeholder="搜索影视标题或 ID..."
+                               class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none">
+                        <button @click="fetchTasks()" class="bg-slate-700 hover:bg-slate-600 p-2 rounded-xl text-xs text-white">🔄</button>
+                        <button @click="clearCompletedTasks()" class="bg-rose-900/50 hover:bg-rose-900 text-rose-300 px-3 py-1.5 rounded-xl text-xs border border-rose-500/30">清除记录</button>
+                    </div>
+                </div>
+
+                <!-- Tasks Table -->
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="text-xs uppercase bg-slate-900/80 text-slate-400 border-b border-slate-700">
+                            <tr>
+                                <th class="px-4 py-3">任务 ID</th>
+                                <th class="px-4 py-3">媒体识别名称</th>
+                                <th class="px-4 py-3">分类</th>
+                                <th class="px-4 py-3">状态</th>
+                                <th class="px-4 py-3">文件进度</th>
+                                <th class="px-4 py-3">时间</th>
+                                <th class="px-4 py-3 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700/60">
+                            <template x-for="task in tasksList" :key="task.task_id">
+                                <tr class="hover:bg-slate-750/50 transition-colors">
+                                    <td class="px-4 py-3 font-mono text-xs text-slate-400" x-text="task.task_id"></td>
+                                    <td class="px-4 py-3 font-medium text-white">
+                                        <div class="flex items-center space-x-2">
+                                            <span x-text="task.tmdb_title || '未知媒体'"></span>
+                                            <template x-if="task.year">
+                                                <span class="text-xs text-slate-400 font-normal" x-text="'(' + task.year + ')'"></span>
+                                            </template>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs">
+                                        <span class="px-2 py-0.5 rounded text-xs"
+                                              :class="task.media_type === 'tv' ? 'bg-indigo-950 text-indigo-300 border border-indigo-500/30' : 'bg-amber-950 text-amber-300 border border-amber-500/30'"
+                                              x-text="task.media_type === 'tv' ? '电视剧' : '电影'"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs">
+                                        <span class="px-2.5 py-1 rounded-full text-xs font-medium"
+                                              :class="{
+                                                  'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30': task.status === 'COMPLETED',
+                                                  'bg-sky-500/20 text-sky-300 border border-sky-500/30 animate-pulse': task.status === 'PROCESSING',
+                                                  'bg-amber-500/20 text-amber-300 border border-amber-500/30': task.status === 'PENDING',
+                                                  'bg-rose-500/20 text-rose-300 border border-rose-500/30': task.status === 'FAILED',
+                                              }"
+                                              x-text="task.status"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs font-mono">
+                                        <span x-text="task.processed_files + ' / ' + task.total_files"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs text-slate-400" x-text="formatTime(task.created_at)"></td>
+                                    <td class="px-4 py-3 text-right space-x-2">
+                                        <button @click="showTaskModal(task)"
+                                                class="text-xs text-sky-400 hover:text-sky-300 font-medium">详情</button>
+                                        <button @click="deleteTask(task.task_id)"
+                                                class="text-xs text-rose-400 hover:text-rose-300 font-medium">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                            <template x-if="tasksList.length === 0">
+                                <tr>
+                                    <td colspan="7" class="text-center py-12 text-slate-500 text-sm">
+                                        暂无转存与重命名记录
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Task Detail Modal -->
+    <div x-show="selectedTask" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" x-cloak>
+        <div @click.away="selectedTask = null" class="bg-slate-800 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+                <h3 class="font-bold text-lg text-white flex items-center space-x-2">
+                    <span>🎬</span>
+                    <span x-text="selectedTask ? (selectedTask.tmdb_title + (selectedTask.year ? ' (' + selectedTask.year + ')' : '')) : ''"></span>
+                </h3>
+                <button @click="selectedTask = null" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <template x-if="selectedTask">
+                <div class="space-y-4 text-xs">
+                    <div class="grid grid-cols-2 gap-3 bg-slate-900 p-3 rounded-xl">
+                        <div><span class="text-slate-500">任务 ID:</span> <span class="font-mono text-slate-200" x-text="selectedTask.task_id"></span></div>
+                        <div><span class="text-slate-500">状态:</span> <strong class="text-sky-400" x-text="selectedTask.status"></strong></div>
+                        <div class="col-span-2"><span class="text-slate-500">分享链接:</span> <span class="font-mono text-slate-300 truncate block" x-text="selectedTask.share_url"></span></div>
+                    </div>
+
+                    <!-- Rename Log Summary -->
+                    <div>
+                        <h4 class="font-semibold text-slate-200 mb-2">📂 重命名与归档路径详情:</h4>
+                        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-60 overflow-y-auto"
+                             x-text="selectedTask.result_summary || (selectedTask.error_message ? '❌ 错误: ' + selectedTask.error_message : '处理中...')">
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Application JavaScript -->
+    <script>
+        function dashboardApp() {
+            return {
+                currentTab: 'dashboard',
+                loginUrl: '',
+                manualCode: '',
+                submittingCode: false,
+                submittingTask: false,
+                savingSettings: false,
+                loadingDirs: false,
+                testingTMDB: false,
+                tmdbTestQuery: '',
+                tmdbTestResults: [],
+                currentNetdiskPath: '/',
+                netdiskDirs: [],
+                selectedTask: null,
+                toast: { show: false, message: '', type: 'success' },
+                quickTask: { share_url: '', share_pwd: '' },
+                taskFilter: { status: 'ALL', search: '' },
+                taskStats: { total: 0, completed: 0, processing: 0, failed: 0 },
+                tasksList: [],
+                auth: { is_authenticated: false, user_info: null, quota: null },
+                settings: {
+                    telegram: { raw_bot_token: '', admin_user_id: 0 },
+                    tmdb: { raw_api_key: '', language: 'zh-CN', include_adult: false },
+                    baidu: { app_key: '', raw_app_secret: '', redirect_uri: 'oob' },
+                    media: { movie_dir: '/Media/Movies', tv_dir: '/Media/TV', movie_format: '', tv_format: '', auto_transfer: false, cleanup_temp_dirs: true },
+                },
+
+                get currentPathParts() {
+                    return this.currentNetdiskPath.split('/').filter(Boolean);
+                },
+
+                async initApp() {
+                    await this.fetchAuthStatus();
+                    await this.fetchSettings();
+                    await this.fetchTaskStats();
+                    await this.fetchTasks();
+                    await this.fetchLoginUrl();
+                    if (this.auth.is_authenticated) {
+                        this.fetchDirectories('/');
+                    }
+                },
+
+                showToast(message, type = 'success') {
+                    this.toast.message = message;
+                    this.toast.type = type;
+                    this.toast.show = true;
+                    setTimeout(() => { this.toast.show = false; }, 3500);
+                },
+
+                formatTime(timestamp) {
+                    if (!timestamp) return '-';
+                    const d = new Date(timestamp * 1000);
+                    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                },
+
+                async fetchAuthStatus() {
+                    try {
+                        const res = await fetch('/api/auth/status');
+                        this.auth = await res.json();
+                    } catch (e) {
+                        console.error('Failed to fetch auth status', e);
+                    }
+                },
+
+                async fetchLoginUrl() {
+                    try {
+                        const res = await fetch('/api/auth/login-url');
+                        const data = await res.json();
+                        this.loginUrl = data.url;
+                    } catch (e) {
+                        console.error(e);
+                    }
+                },
+
+                async submitAuthCode() {
+                    this.submittingCode = true;
+                    try {
+                        const res = await fetch('/api/auth/code', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ code: this.manualCode })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.showToast('✅ 百度账号绑定成功！');
+                            this.manualCode = '';
+                            await this.fetchAuthStatus();
+                            this.fetchDirectories('/');
+                        } else {
+                            this.showToast('❌ ' + (data.detail || '绑定失败'), 'error');
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 请求失败: ' + e, 'error');
+                    } finally {
+                        this.submittingCode = false;
+                    }
+                },
+
+                async logoutBaidu() {
+                    if (!confirm('确定要解除当前百度账号绑定吗？')) return;
+                    try {
+                        await fetch('/api/auth/logout', { method: 'POST' });
+                        this.showToast('已解除账号绑定');
+                        await this.fetchAuthStatus();
+                    } catch (e) {
+                        this.showToast('❌ 操作失败', 'error');
+                    }
+                },
+
+                async fetchDirectories(path = '/') {
+                    this.loadingDirs = true;
+                    this.currentNetdiskPath = path;
+                    try {
+                        const res = await fetch('/api/netdisk/dirs?path=' + encodeURIComponent(path));
+                        const data = await res.json();
+                        this.netdiskDirs = data.directories || [];
+                    } catch (e) {
+                        this.showToast('❌ 无法获取目录列表: ' + e, 'error');
+                    } finally {
+                        this.loadingDirs = false;
+                    }
+                },
+
+                navigateToBreadcrumb(idx) {
+                    const parts = this.currentPathParts.slice(0, idx + 1);
+                    const targetPath = '/' + parts.join('/');
+                    this.fetchDirectories(targetPath);
+                },
+
+                async promptNewFolder() {
+                    const name = prompt('请输入新文件夹名称:');
+                    if (!name || !name.trim()) return;
+                    const fullPath = (this.currentNetdiskPath.endsWith('/') ? this.currentNetdiskPath : this.currentNetdiskPath + '/') + name.trim();
+                    try {
+                        const res = await fetch('/api/netdisk/mkdir', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ path: fullPath })
+                        });
+                        if (res.ok) {
+                            this.showToast('✅ 文件夹已创建');
+                            this.fetchDirectories(this.currentNetdiskPath);
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 创建失败', 'error');
+                    }
+                },
+
+                async setAsTarget(dirType, path) {
+                    try {
+                        const res = await fetch('/api/netdisk/set-target-dir', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ dir_type: dirType, path: path })
+                        });
+                        if (res.ok) {
+                            this.showToast(`✅ 已设为${dirType === 'movie' ? '电影' : '剧集'}保存目录: ${path}`);
+                            await this.fetchSettings();
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 设置失败', 'error');
+                    }
+                },
+
+                async fetchSettings() {
+                    try {
+                        const res = await fetch('/api/settings');
+                        this.settings = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load settings', e);
+                    }
+                },
+
+                async saveAllSettings() {
+                    this.savingSettings = true;
+                    try {
+                        const payload = {
+                            telegram_bot_token: this.settings.telegram.raw_bot_token,
+                            telegram_admin_user_id: parseInt(this.settings.telegram.admin_user_id) || 0,
+                            tmdb_api_key: this.settings.tmdb.raw_api_key,
+                            tmdb_language: this.settings.tmdb.language,
+                            media_movie_dir: this.settings.media.movie_dir,
+                            media_tv_dir: this.settings.media.tv_dir,
+                            media_movie_format: this.settings.media.movie_format,
+                            media_tv_format: this.settings.media.tv_format,
+                            media_auto_transfer: this.settings.media.auto_transfer,
+                            media_cleanup_temp_dirs: this.settings.media.cleanup_temp_dirs
+                        };
+                        const res = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (res.ok) {
+                            this.showToast('✅ 设置已保存生效！');
+                            await this.fetchSettings();
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 保存失败: ' + e, 'error');
+                    } finally {
+                        this.savingSettings = false;
+                    }
+                },
+
+                async testTMDB() {
+                    if (!this.tmdbTestQuery.trim()) return;
+                    this.testingTMDB = true;
+                    try {
+                        const res = await fetch('/api/settings/test-tmdb', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: this.tmdbTestQuery.trim() })
+                        });
+                        const data = await res.json();
+                        this.tmdbTestResults = data.results || [];
+                    } catch (e) {
+                        this.showToast('❌ TMDB 测试失败', 'error');
+                    } finally {
+                        this.testingTMDB = false;
+                    }
+                },
+
+                async submitShareTask() {
+                    if (!this.quickTask.share_url) return;
+                    this.submittingTask = true;
+                    try {
+                        const res = await fetch('/api/tasks/submit', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.quickTask)
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.showToast(`✅ 任务已创建: ${data.tmdb.title}`);
+                            this.quickTask = { share_url: '', share_pwd: '' };
+                            await this.fetchTaskStats();
+                            await this.fetchTasks();
+                            this.currentTab = 'tasks';
+                        } else {
+                            this.showToast('❌ ' + (data.detail || '提交失败'), 'error');
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 请求失败: ' + e, 'error');
+                    } finally {
+                        this.submittingTask = false;
+                    }
+                },
+
+                async fetchTaskStats() {
+                    try {
+                        const res = await fetch('/api/tasks/stats');
+                        this.taskStats = await res.json();
+                    } catch (e) {}
+                },
+
+                async fetchTasks() {
+                    try {
+                        let url = `/api/tasks?status=${this.taskFilter.status}`;
+                        if (this.taskFilter.search) url += `&search=${encodeURIComponent(this.taskFilter.search)}`;
+                        const res = await fetch(url);
+                        const data = await res.json();
+                        this.tasksList = data.tasks || [];
+                    } catch (e) {}
+                },
+
+                showTaskModal(task) {
+                    this.selectedTask = task;
+                },
+
+                async deleteTask(taskId) {
+                    if (!confirm('确定删除该记录吗？')) return;
+                    try {
+                        await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+                        this.showToast('已删除任务');
+                        await this.fetchTaskStats();
+                        await this.fetchTasks();
+                    } catch (e) {}
+                },
+
+                async clearCompletedTasks() {
+                    if (!confirm('确定清空已完成的历史记录吗？')) return;
+                    try {
+                        await fetch('/api/tasks/clear', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'COMPLETED' })
+                        });
+                        this.showToast('已清理完成任务');
+                        await this.fetchTaskStats();
+                        await this.fetchTasks();
+                    } catch (e) {}
+                }
+            }
+        }
+    </script>
+</body>
+</html>

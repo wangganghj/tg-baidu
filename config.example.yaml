@@ -57,3 +57,13 @@ system:
   log_level: "INFO"
   # Maximum concurrent transfer/rename tasks
   max_concurrent_tasks: 3
+
+web:
+  # Enable Web Management Dashboard
+  enabled: true
+  # Web server listening host (0.0.0.0 for all interfaces)
+  host: "0.0.0.0"
+  # Web server listening port
+  port: 8080
+  # Optional: Password protection for web management panel (leave blank for none)
+  auth_password: ""
