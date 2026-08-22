@@ -8,17 +8,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system build dependencies needed for C/Cython extensions (baidupcs-py, aget, cffi)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     gcc \
+    g++ \
+    python3-dev \
+    libffi-dev \
     ca-certificates \
     tzdata \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependencies
+# Copy dependencies and pre-install build tools
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel Cython && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application source code and configs
