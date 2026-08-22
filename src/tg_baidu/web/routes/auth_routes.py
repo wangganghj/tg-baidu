@@ -1,5 +1,5 @@
 """
-OAuth2, Device Code, and Baidu Account API routes.
+OAuth2, Device Code, BDUSS Cookie, and Baidu Account API routes.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+
+from ...baidu.client import clean_bduss_string
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,15 @@ async def get_auth_status(request: Request) -> Dict[str, Any]:
     auth_manager = request.app.state.auth_manager
 
     token_record = await db.get_baidu_token()
-    is_authenticated = bool(token_record and token_record.get("access_token")) or bool(config.baidu.access_token)
+    if token_record:
+        if token_record.get("bduss") and not baidu_client.bduss:
+            baidu_client.bduss = token_record["bduss"]
+        if token_record.get("stoken") and not baidu_client.stoken:
+            baidu_client.stoken = token_record["stoken"]
+
+    has_token = bool(token_record and token_record.get("access_token")) or bool(config.baidu.access_token)
+    has_bduss = bool(token_record and token_record.get("bduss")) or bool(baidu_client.bduss)
+    is_authenticated = has_token or has_bduss
 
     uinfo_dict = None
     quota_dict = None
@@ -85,11 +95,13 @@ async def get_auth_status(request: Request) -> Dict[str, Any]:
 
     return {
         "is_authenticated": is_authenticated and uinfo_dict is not None,
+        "auth_type": "bduss" if has_bduss and not has_token else "oauth",
         "has_app_key": bool(auth_manager.app_key),
         "app_key_hint": auth_manager.app_key[:4] + "..." if len(auth_manager.app_key) > 6 else auth_manager.app_key,
         "token_record": {
             "expires_at": token_record.get("expires_at") if token_record else None,
             "has_refresh_token": bool(token_record and token_record.get("refresh_token")),
+            "has_bduss": bool(token_record and token_record.get("bduss")),
             "scope": token_record.get("scope") if token_record else None,
         } if token_record else None,
         "user_info": uinfo_dict,
@@ -177,35 +189,31 @@ async def submit_direct_token(payload: DirectTokenRequest, request: Request) -> 
     config = request.app.state.config
 
     token_val = (payload.access_token or "").strip()
-    bduss_val = (payload.bduss or "").strip()
+    bduss_val = clean_bduss_string(payload.bduss or "")
+    stoken_val = (payload.stoken or "").strip()
 
     if not token_val and not bduss_val:
         raise HTTPException(status_code=400, detail="Access Token 与 BDUSS 不能同时为空。")
 
     try:
-        # If user provides BDUSS, we update client cookies
+        # Update in-memory client
         if bduss_val:
             baidu_client.bduss = bduss_val
             config.baidu.bduss = bduss_val
-        if payload.stoken:
-            baidu_client.stoken = payload.stoken.strip()
-            config.baidu.stoken = payload.stoken.strip()
-
+        if stoken_val:
+            baidu_client.stoken = stoken_val
+            config.baidu.stoken = stoken_val
         if token_val:
+            baidu_client.fallback_token = token_val
             config.baidu.access_token = token_val
-            await db.save_baidu_token(
-                access_token=token_val,
-                refresh_token=(payload.refresh_token or "").strip(),
-                bduss=bduss_val,
-                stoken=(payload.stoken or "").strip(),
-            )
-        elif bduss_val:
-            # Save dummy token record to hold BDUSS
-            await db.save_baidu_token(
-                access_token=token_val or "BDUSS_AUTH_MODE",
-                refresh_token="",
-                bduss=bduss_val,
-            )
+
+        # Save to database
+        await db.save_baidu_token(
+            access_token=token_val,
+            refresh_token=(payload.refresh_token or "").strip(),
+            bduss=bduss_val,
+            stoken=stoken_val,
+        )
 
         uinfo = await baidu_client.get_user_info()
         return {
@@ -283,4 +291,5 @@ async def logout(request: Request) -> Dict[str, bool]:
     config.baidu.bduss = ""
     baidu_client.bduss = ""
     baidu_client.stoken = ""
+    baidu_client.fallback_token = ""
     return {"success": True}
