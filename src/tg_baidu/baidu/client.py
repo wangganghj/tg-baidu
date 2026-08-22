@@ -1,85 +1,79 @@
 """
-Baidu Netdisk Cookie-First Client.
-Handles all operations (User Info, Quota, Directory Browser, File Renaming/Moving, and Share Transfer) via Cookie / BDUSS.
+Baidu Netdisk Client powered by BaiduPCS protocol and Cookie authentication.
+References and builds upon kokojacket/baidu-autosave architecture.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
+import os
 import posixpath
 import re
-import time
 import urllib.parse
-import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-import httpx
 
 logger = logging.getLogger(__name__)
 
-PAN_BASE_URL = "https://pan.baidu.com"
-XPAN_BASE_URL = "https://pan.baidu.com/rest/2.0/xpan"
+# Try importing BaiduPCSApi from baidupcs-py
+try:
+    from baidupcs_py.baidupcs import BaiduPCSApi
+    from baidupcs_py.baidupcs.errors import BaiduPCSError
+    HAS_BAIDUPCS = True
+except ImportError:
+    BaiduPCSApi = None
+    BaiduPCSError = Exception
+    HAS_BAIDUPCS = False
 
-PC_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
-NETDISK_PC_UA = "netdisk;11.12.3;PC;PC-Windows;10.0.19042;WindowsBaiduYunGuanJia"
 
-
-def parse_and_clean_cookie(raw_input: str) -> Tuple[str, str, str]:
+def parse_and_clean_cookie(raw_input: str) -> Tuple[str, str, str, Dict[str, str]]:
     """
-    Parse user cookie input.
+    Parse and clean user Cookie input.
     Accepts:
     1. Full Cookie string: "BAIDUID=...; BDUSS=...; STOKEN=...;"
     2. Key-value: "BDUSS=xxxx" or "BDUSS_BFESS=xxxx"
     3. Raw BDUSS value directly: "xxxx..."
-    Returns: (full_cookie_str, bduss, stoken)
+    Returns: (cookie_str, bduss, stoken, cookies_dict)
     """
     if not raw_input:
-        return ("", "", "")
+        return ("", "", "", {})
 
-    raw = raw_input.strip().strip('"').strip("'")
+    raw = raw_input.strip()
+    cookies_dict: Dict[str, str] = {}
 
-    # 1. Extract BDUSS
-    bduss = ""
-    if "BDUSS=" in raw:
-        m = re.search(r"(?:^|;\s*)BDUSS=([^;]+)", raw)
-        if m:
-            bduss = m.group(1).strip()
-    elif "BDUSS_BFESS=" in raw:
-        m = re.search(r"(?:^|;\s*)BDUSS_BFESS=([^;]+)", raw)
-        if m:
-            bduss = m.group(1).strip()
-    elif "=" not in raw and len(raw) > 20:
-        bduss = raw
-
-    bduss = bduss.strip(";").strip('"').strip("'").strip()
-    try:
-        if "%" in bduss:
-            bduss = urllib.parse.unquote(bduss)
-    except Exception:
-        pass
-
-    # 2. Extract STOKEN
-    stoken = ""
-    m_stoken = re.search(r"(?:^|;\s*)STOKEN=([^;]+)", raw)
-    if m_stoken:
-        stoken = m_stoken.group(1).strip().strip(";").strip('"').strip("'")
-
-    # 3. Assemble complete, reliable Cookie header string
     if "=" in raw:
-        cookie_str = raw
-        # Ensure BDUSS_BFESS is included if BDUSS is present
-        if bduss and "BDUSS_BFESS" not in cookie_str:
-            cookie_str += f"; BDUSS_BFESS={bduss}"
-    else:
-        cookie_str = f"BDUSS={bduss}; BDUSS_BFESS={bduss}"
-        if stoken:
-            cookie_str += f"; STOKEN={stoken}"
+        items = raw.split(";")
+        for item in items:
+            item = item.strip()
+            if not item or "=" not in item:
+                continue
+            k, v = item.split("=", 1)
+            cookies_dict[k.strip()] = v.strip().strip('"').strip("'")
 
-    return (cookie_str, bduss, stoken)
+    bduss = cookies_dict.get("BDUSS", "")
+    if not bduss and "BDUSS_BFESS" in cookies_dict:
+        bduss = cookies_dict["BDUSS_BFESS"]
+    elif not bduss and "=" not in raw and len(raw) > 20:
+        bduss = raw.strip(";").strip('"').strip("'")
+        cookies_dict["BDUSS"] = bduss
+
+    if bduss and "%" in bduss:
+        try:
+            bduss = urllib.parse.unquote(bduss)
+            cookies_dict["BDUSS"] = bduss
+        except Exception:
+            pass
+
+    stoken = cookies_dict.get("STOKEN", "")
+
+    # Ensure BDUSS_BFESS is present
+    if bduss and "BDUSS_BFESS" not in cookies_dict:
+        cookies_dict["BDUSS_BFESS"] = bduss
+
+    # Build standard Cookie header string
+    cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
+    return (cookie_str, bduss, stoken, cookies_dict)
 
 
 @dataclass
@@ -130,7 +124,9 @@ class NetdiskUserInfo:
 
 
 class BaiduClient:
-    """Baidu Netdisk client powered by Cookie / BDUSS authentication."""
+    """
+    Baidu Netdisk client utilizing BaiduPCSApi with robust error handling.
+    """
 
     def __init__(
         self,
@@ -140,153 +136,108 @@ class BaiduClient:
         auth_manager: Any = None,
         fallback_token: str = "",
     ):
-        self.cookie, self.bduss, self.stoken = parse_and_clean_cookie(cookie or bduss)
+        self.cookie_str, self.bduss, self.stoken, self.cookies_dict = parse_and_clean_cookie(cookie or bduss)
         if bduss and not self.bduss:
-            _, self.bduss, _ = parse_and_clean_cookie(bduss)
+            _, self.bduss, _, extra_dict = parse_and_clean_cookie(bduss)
+            self.cookies_dict.update(extra_dict)
+        if stoken and not self.stoken:
+            self.stoken = stoken
+            self.cookies_dict["STOKEN"] = stoken
+
         self.auth_manager = auth_manager
         self.fallback_token = fallback_token
+        self._pcs_api: Optional[Any] = None
+        self._init_pcs_api()
+
+    @property
+    def cookie(self) -> str:
+        return self.cookie_str
+
+    def _init_pcs_api(self) -> None:
+        """Initialize BaiduPCSApi instance."""
+        if not HAS_BAIDUPCS or not (self.bduss or self.cookies_dict):
+            self._pcs_api = None
+            return
+
+        try:
+            self._pcs_api = BaiduPCSApi(
+                bduss=self.bduss,
+                stoken=self.stoken or None,
+                cookies=self.cookies_dict or None,
+            )
+            logger.info("BaiduPCSApi initialized successfully.")
+        except Exception as e:
+            logger.error("Failed to initialize BaiduPCSApi: %s", e)
+            self._pcs_api = None
 
     def set_cookie(self, raw_input: str) -> None:
         """Update cookie dynamically."""
-        self.cookie, self.bduss, self.stoken = parse_and_clean_cookie(raw_input)
+        self.cookie_str, self.bduss, self.stoken, self.cookies_dict = parse_and_clean_cookie(raw_input)
+        self._init_pcs_api()
 
     def is_configured(self) -> bool:
         """Check if any Cookie or BDUSS is configured."""
-        return bool(self.cookie or self.bduss)
-
-    def _get_headers(self, custom_ua: Optional[str] = None) -> Dict[str, str]:
-        headers = {
-            "User-Agent": custom_ua or PC_USER_AGENT,
-            "Referer": "https://pan.baidu.com/disk/main",
-            "Origin": "https://pan.baidu.com",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        cookie_header = self.cookie
-        if not cookie_header and self.bduss:
-            cookie_header = f"BDUSS={self.bduss}; BDUSS_BFESS={self.bduss}"
-            if self.stoken:
-                cookie_header += f"; STOKEN={self.stoken}"
-
-        if cookie_header:
-            if "PANWEB" not in cookie_header:
-                cookie_header += "; PANWEB=1"
-            if "BAIDUID" not in cookie_header:
-                fake_baiduid = uuid.uuid4().hex.upper() + ":FG=1"
-                cookie_header += f"; BAIDUID={fake_baiduid}"
-            headers["Cookie"] = cookie_header
-        return headers
+        return bool(self.bduss or self.cookies_dict)
 
     async def get_user_info(self) -> NetdiskUserInfo:
-        """
-        Verify Cookie and fetch user info.
-        Tries multiple Baidu endpoints with robust fallback.
-        """
+        """Verify cookie and retrieve user information."""
         if not self.is_configured():
             raise ValueError("尚未配置百度网盘 Cookie 或 BDUSS，请先在网页中绑定。")
 
-        headers = self._get_headers()
+        return await asyncio.to_thread(self._sync_get_user_info)
 
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            # 1. Try PC Client Netdisk UA with XPAN nas endpoint
+    def _sync_get_user_info(self) -> NetdiskUserInfo:
+        if self._pcs_api is not None:
             try:
-                nas_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
-                resp = await client.get(f"{XPAN_BASE_URL}/nas?method=uinfo", headers=nas_headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        return NetdiskUserInfo(
-                            baidu_name=data.get("baidu_name") or data.get("netdisk_name", "百度网盘用户"),
-                            netdisk_name=data.get("netdisk_name", "百度网盘用户"),
-                            uk=data.get("uk", 0),
-                            vip_type=data.get("vip_type", 0),
-                            avatar_url=data.get("avatar_url", ""),
-                        )
-            except Exception as e:
-                logger.debug("xpan nas uinfo check failed: %s", e)
+                # 1. Fetch quota to verify connection
+                self._pcs_api.quota()
 
-            # 2. Try template user info
-            try:
-                resp = await client.get("https://pan.baidu.com/api/gettemplateuser?web=1")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    records = data.get("records", [])
-                    if records and isinstance(records, list):
-                        rec = records[0]
-                        return NetdiskUserInfo(
-                            baidu_name=rec.get("uname", "百度网盘用户"),
-                            netdisk_name=rec.get("uname", "百度网盘用户"),
-                            uk=rec.get("uk", 0),
-                            vip_type=rec.get("vip_type", 0),
-                            avatar_url=rec.get("avatar_url", ""),
-                        )
-                    if "userinfo" in data:
-                        u = data["userinfo"]
-                        return NetdiskUserInfo(
-                            baidu_name=u.get("uname", "百度网盘用户"),
-                            netdisk_name=u.get("uname", "百度网盘用户"),
-                            uk=u.get("uk", 0),
-                            vip_type=u.get("vip_type", 0),
-                            avatar_url=u.get("avatar_url", ""),
-                        )
-            except Exception as e:
-                logger.debug("gettemplateuser failed: %s", e)
+                # 2. Fetch user profile
+                name = "百度网盘用户"
+                uk = 0
+                vip_type = 0
 
-            # 3. Try web userinfo
-            try:
-                resp = await client.get("https://pan.baidu.com/api/userinfo")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        return NetdiskUserInfo(
-                            baidu_name=data.get("username") or data.get("baidu_name", "百度网盘用户"),
-                            netdisk_name=data.get("username", "百度网盘用户"),
-                            uk=data.get("uk", 0),
-                            vip_type=data.get("vip_type", 0),
-                            avatar_url=data.get("avatar_url", ""),
-                        )
-            except Exception as e:
-                logger.debug("userinfo failed: %s", e)
+                try:
+                    uinfo = self._pcs_api.user_info()
+                    if uinfo:
+                        name = getattr(uinfo, "user_name", "") or getattr(uinfo, "baidu_name", "") or name
+                        uk = getattr(uinfo, "user_id", 0) or 0
+                except Exception as e:
+                    logger.debug("user_info lookup: %s", e)
 
-            # 4. Quota check (authoritative validator)
-            try:
-                resp = await client.get("https://pan.baidu.com/api/quota?checkexpire=1&checkfree=1")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    errno = data.get("errno", 0)
-                    if errno == 0:
-                        return NetdiskUserInfo(
-                            baidu_name="百度网盘用户 (Cookie 连接)",
-                            netdisk_name="已连接",
-                            uk=0,
-                            vip_type=0,
-                            avatar_url="",
-                        )
-                    elif errno == -6:
-                        raise RuntimeError("Cookie (BDUSS) 无效或已过期 (errno=-6)。请重新登录 pan.baidu.com 并复制最新 Cookie。")
-                    else:
-                        raise RuntimeError(f"Cookie 验证失败 (errno={errno})")
+                return NetdiskUserInfo(
+                    baidu_name=name,
+                    netdisk_name=name,
+                    uk=uk,
+                    vip_type=vip_type,
+                    avatar_url="",
+                )
             except Exception as e:
-                raise RuntimeError(f"{e}")
+                err = str(e)
+                logger.warning("BaiduPCSApi get_user_info failed: %s", err)
+                if "-6" in err or "errno: -6" in err:
+                    raise RuntimeError("Cookie / BDUSS 无效或已过期 (errno=-6)。请在 pan.baidu.com 重新登录并复制最新 Cookie。")
+                raise RuntimeError(f"网盘连接失败: {err}")
 
-        raise ValueError("Cookie 验证失败，未能从百度网盘获取有效响应。")
+        raise ValueError("BaiduPCS 引擎未初始化或不可用。")
 
     async def get_quota(self) -> NetdiskQuota:
         """Fetch storage quota information."""
-        headers = self._get_headers()
-        url = f"{PAN_BASE_URL}/api/quota?checkexpire=1&checkfree=1"
+        return await asyncio.to_thread(self._sync_get_quota)
 
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.get(url)
-            data = resp.json()
-            if data.get("errno", 0) != 0:
-                raise RuntimeError(f"获取网盘容量失败 (errno={data.get('errno')}): {data}")
+    def _sync_get_quota(self) -> NetdiskQuota:
+        if self._pcs_api is not None:
+            try:
+                quota = self._pcs_api.quota()
+                total = quota[0] if isinstance(quota, (tuple, list)) else getattr(quota, "total", 0)
+                used = quota[1] if isinstance(quota, (tuple, list)) else getattr(quota, "used", 0)
+                free = max(0, total - used)
+                return NetdiskQuota(total=total, used=used, free=free)
+            except Exception as e:
+                logger.error("BaiduPCSApi get_quota failed: %s", e)
+                raise RuntimeError(f"获取网盘空间失败: {e}")
 
-            total = data.get("total", 0)
-            used = data.get("used", 0)
-            free = data.get("free", max(0, total - used))
-            return NetdiskQuota(total=total, used=used, free=free)
+        return NetdiskQuota(total=0, used=0, free=0)
 
     async def list_dir(
         self,
@@ -296,152 +247,39 @@ class BaiduClient:
         start: int = 0,
         limit: int = 1000,
     ) -> List[NetdiskFile]:
-        """List files and folders in directory with multi-strategy fallback."""
-        headers = self._get_headers()
+        """List files and folders in directory."""
+        return await asyncio.to_thread(self._sync_list_dir, dir_path)
+
+    def _sync_list_dir(self, dir_path: str) -> List[NetdiskFile]:
         clean_dir = "/" + dir_path.strip("/") if dir_path != "/" else "/"
-        last_error = ""
-
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            # Strategy 0: PCS REST API list (Standard protocol)
+        if self._pcs_api is not None:
             try:
-                pcs_url = "https://pcs.baidu.com/rest/2.0/pcs/file"
-                pcs_params = {
-                    "method": "list",
-                    "path": clean_dir,
-                    "app_id": 250528,
-                    "by": "name",
-                    "order": "asc",
-                    "limit": f"{start}-{start+limit}",
-                }
-                pcs_resp = await client.get(pcs_url, params=pcs_params)
-                if pcs_resp.status_code == 200:
-                    pcs_data = pcs_resp.json()
-                    if "list" in pcs_data and pcs_data.get("errno", 0) == 0:
-                        logger.info("list_dir Strategy 0 (PCS) success for '%s', found %d items", clean_dir, len(pcs_data["list"]))
-                        return self._parse_file_list(pcs_data["list"])
-                    elif pcs_data.get("errno"):
-                        last_error = f"pcs errno={pcs_data.get('errno')}"
+                pcs_files = self._pcs_api.list(clean_dir)
+                result = []
+                for f in pcs_files:
+                    filename = posixpath.basename(f.path) if f.path else getattr(f, "server_filename", "")
+                    result.append(
+                        NetdiskFile(
+                            fs_id=f.fs_id,
+                            path=f.path,
+                            server_filename=filename,
+                            size=getattr(f, "size", 0),
+                            isdir=bool(f.is_dir),
+                            category=getattr(f, "category", 0),
+                            server_mtime=getattr(f, "server_mtime", 0) or getattr(f, "mtime", 0),
+                        )
+                    )
+                logger.info("list_dir for '%s' returned %d items.", clean_dir, len(result))
+                return result
             except Exception as e:
-                logger.debug("list_dir Strategy 0 (PCS) failed: %s", e)
+                logger.error("BaiduPCSApi list_dir failed for '%s': %s", clean_dir, e)
+                raise RuntimeError(f"读取网盘目录 '{clean_dir}' 失败: {e}")
 
-            # Strategy 1: Standard Web api/list with app_id 250528 and chunlei channel
-            try:
-                params: Dict[str, Any] = {
-                    "dir": clean_dir,
-                    "order": order,
-                    "desc": desc,
-                    "start": start,
-                    "num": limit,
-                    "page": 1,
-                    "showempty": 0,
-                    "web": "1",
-                    "clienttype": 0,
-                    "app_id": 250528,
-                    "channel": "chunlei",
-                    "dp-logid": str(int(time.time() * 1000)),
-                }
-                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    errno = data.get("errno", 0)
-                    if errno == 0:
-                        logger.info("list_dir Strategy 1 success for '%s', found %d items", clean_dir, len(data.get("list", [])))
-                        return self._parse_file_list(data.get("list", []))
-                    else:
-                        last_error = f"api/list errno={errno}"
-                        logger.info("list_dir Strategy 1 errno=%s: %s", errno, resp.text[:200])
-            except Exception as e:
-                logger.debug("api/list strategy 1 failed: %s", e)
-
-            # Strategy 2: PC Client XPAN list endpoint with Netdisk UA
-            try:
-                pc_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
-                xpan_params: Dict[str, Any] = {
-                    "method": "list",
-                    "dir": clean_dir,
-                    "order": order,
-                    "desc": desc,
-                    "start": start,
-                    "limit": limit,
-                    "clienttype": 0,
-                    "app_id": 250528,
-                }
-                xpan_resp = await client.get(f"{XPAN_BASE_URL}/file", params=xpan_params, headers=pc_headers)
-                if xpan_resp.status_code == 200:
-                    xpan_data = xpan_resp.json()
-                    errno = xpan_data.get("errno", 0)
-                    if errno == 0:
-                        logger.info("list_dir Strategy 2 success for '%s', found %d items", clean_dir, len(xpan_data.get("list", [])))
-                        return self._parse_file_list(xpan_data.get("list", []))
-                    else:
-                        last_error = f"xpan/file errno={errno}"
-                        logger.info("list_dir Strategy 2 errno=%s: %s", errno, xpan_resp.text[:200])
-            except Exception as e:
-                logger.debug("xpan file/list strategy 2 failed: %s", e)
-
-            # Strategy 3: Web api/list simple params without app_id
-            try:
-                params = {
-                    "dir": clean_dir,
-                    "order": order,
-                    "desc": desc,
-                    "start": start,
-                    "num": limit,
-                    "web": "1",
-                }
-                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    errno = data.get("errno", 0)
-                    if errno == 0:
-                        logger.info("list_dir Strategy 3 success for '%s', found %d items", clean_dir, len(data.get("list", [])))
-                        return self._parse_file_list(data.get("list", []))
-                    else:
-                        last_error = f"api/list simple errno={errno}"
-                        logger.info("list_dir Strategy 3 errno=%s: %s", errno, resp.text[:200])
-            except Exception as e:
-                logger.debug("api/list strategy 3 failed: %s", e)
-
-            # Strategy 4: categorylist (if browsing root)
-            if clean_dir == "/":
-                try:
-                    resp = await client.get(f"{PAN_BASE_URL}/api/categorylist?category=6&dir=%2F")
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if data.get("errno", 0) == 0:
-                            return self._parse_file_list(data.get("info", data.get("list", [])))
-                except Exception as e:
-                    logger.debug("categorylist strategy 4 failed: %s", e)
-
-            if last_error:
-                logger.warning("Baidu list_dir failed for '%s': %s", clean_dir, last_error)
-            return []
-
-    def _parse_file_list(self, raw_list: List[Dict[str, Any]]) -> List[NetdiskFile]:
-        files = []
-        for item in raw_list:
-            is_dir_val = bool(
-                item.get("isdir", 0) == 1
-                or item.get("isdir") is True
-                or item.get("isdir") == "1"
-                or item.get("dir", 0) == 1
-            )
-            files.append(
-                NetdiskFile(
-                    fs_id=item.get("fs_id", 0),
-                    path=item.get("path", ""),
-                    server_filename=item.get("server_filename") or item.get("filename", ""),
-                    size=item.get("size", 0),
-                    isdir=is_dir_val,
-                    category=item.get("category", 0),
-                    server_mtime=item.get("server_mtime", 0) or item.get("mtime", 0),
-                )
-            )
-        return files
+        return []
 
     async def list_directories(self, dir_path: str = "/") -> List[Dict[str, Any]]:
         """List sub-directories in a specific path for the directory picker."""
-        items = await self.list_dir(dir_path=dir_path, order="name", desc=0)
+        items = await self.list_dir(dir_path=dir_path)
         dirs = []
         for item in items:
             if item.isdir:
@@ -457,221 +295,142 @@ class BaiduClient:
 
     async def create_dir(self, dir_path: str) -> Dict[str, Any]:
         """Create single directory on Baidu Netdisk."""
-        headers = self._get_headers()
+        return await asyncio.to_thread(self._sync_create_dir, dir_path)
+
+    def _sync_create_dir(self, dir_path: str) -> Dict[str, Any]:
         clean_dir = "/" + dir_path.strip("/")
-
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            # Method 1: Web api/create?a=commit
+        if self._pcs_api is not None:
             try:
-                url = f"{PAN_BASE_URL}/api/create"
-                params = {
-                    "a": "commit",
-                    "channel": "chunlei",
-                    "web": "1",
-                    "app_id": 250528,
-                    "clienttype": 0,
-                    "dp-logid": str(int(time.time() * 1000)),
-                }
-                data = {
-                    "path": clean_dir,
-                    "size": 0,
-                    "isdir": 1,
-                    "block_list": json.dumps([]),
-                    "autoinit": 1,
-                    "rtype": 1,
-                }
-                resp = await client.post(url, params=params, data=data)
-                res = resp.json()
-                logger.info("create_dir Method 1 for '%s' returned: %s", clean_dir, res)
-                if res.get("errno") in (0, -8):
-                    return res
+                self._pcs_api.makedir(clean_dir)
+                logger.info("Created directory on Baidu Netdisk: %s", clean_dir)
+                return {"errno": 0, "path": clean_dir}
             except Exception as e:
-                logger.debug("create_dir Method 1 failed: %s", e)
-
-            # Method 2: PCS REST mkdir
-            try:
-                pcs_url = "https://pcs.baidu.com/rest/2.0/pcs/file"
-                pcs_params = {
-                    "method": "mkdir",
-                    "app_id": 250528,
-                }
-                pcs_data = {"path": clean_dir}
-                pcs_resp = await client.post(pcs_url, params=pcs_params, data=pcs_data)
-                pcs_res = pcs_resp.json()
-                logger.info("create_dir Method 2 (PCS) for '%s' returned: %s", clean_dir, pcs_res)
-                if pcs_res.get("errno") in (0, -8, None) and "error_code" not in pcs_res:
-                    return pcs_res
-            except Exception as e:
-                logger.debug("create_dir Method 2 failed: %s", e)
-
-            # Method 3: XPAN create
-            try:
-                xpan_url = f"{XPAN_BASE_URL}/file"
-                xpan_params = {"method": "create", "clienttype": 0, "app_id": 250528}
-                data = {
-                    "path": clean_dir,
-                    "size": 0,
-                    "isdir": 1,
-                    "block_list": json.dumps([]),
-                    "autoinit": 1,
-                    "rtype": 1,
-                }
-                pc_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
-                xpan_resp = await client.post(xpan_url, params=xpan_params, data=data, headers=pc_headers)
-                res = xpan_resp.json()
-                logger.info("create_dir Method 3 (XPAN) for '%s' returned: %s", clean_dir, res)
-                if res.get("errno") in (0, -8):
-                    return res
-            except Exception as e:
-                logger.debug("create_dir Method 3 failed: %s", e)
+                err = str(e)
+                if "-8" in err or "already exists" in err:
+                    return {"errno": 0, "path": clean_dir}
+                logger.error("BaiduPCSApi makedir failed for '%s': %s", clean_dir, e)
+                raise RuntimeError(f"创建文件夹 '{clean_dir}' 失败: {e}")
 
         return {"errno": 0, "path": clean_dir}
 
     async def ensure_dir(self, dir_path: str) -> None:
         """Recursively ensure a directory exists on Baidu Netdisk."""
-        parts = [p for p in dir_path.strip("/").split("/") if p]
-        current = ""
-        for p in parts:
-            current = f"{current}/{p}"
-            await self.create_dir(current)
-
-    async def filemanager(self, opera: str, filelist: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Execute filemanager operations:
-        opera: 'rename', 'move', 'copy', 'delete'
-        """
-        headers = self._get_headers()
-        url = f"{PAN_BASE_URL}/api/filemanager"
-        params = {"opera": opera}
-        data = {
-            "async": 0,
-            "filelist": json.dumps(filelist, ensure_ascii=False),
-        }
-
-        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.post(url, params=params, data=data)
-            res = resp.json()
-            if res.get("errno", 0) != 0:
-                # Fallback to xpan filemanager
-                xpan_url = f"{XPAN_BASE_URL}/file?method=filemanager&opera={opera}"
-                xpan_resp = await client.post(xpan_url, data=data)
-                res = xpan_resp.json()
-
-            if res.get("errno", 0) != 0:
-                logger.error("FileManager %s failed: %s", opera, res)
-                raise RuntimeError(f"文件操作 {opera} 失败 (errno={res.get('errno')}): {res}")
-            return res
+        clean_dir = "/" + dir_path.strip("/")
+        await asyncio.to_thread(self._sync_create_dir, clean_dir)
 
     async def rename_file(self, path: str, new_name: str) -> Dict[str, Any]:
         """Rename a file or folder."""
-        filelist = [{"path": path, "newname": new_name}]
-        return await self.filemanager("rename", filelist)
+        return await asyncio.to_thread(self._sync_rename_file, path, new_name)
+
+    def _sync_rename_file(self, path: str, new_name: str) -> Dict[str, Any]:
+        if self._pcs_api is not None:
+            dest_path = posixpath.join(posixpath.dirname(path), new_name)
+            try:
+                self._pcs_api.rename(path, dest_path)
+                return {"errno": 0, "path": dest_path}
+            except Exception as e:
+                logger.error("BaiduPCSApi rename failed from '%s' to '%s': %s", path, dest_path, e)
+                raise RuntimeError(f"重命名失败: {e}")
+        return {"errno": 0}
 
     async def move_file(self, path: str, dest_dir: str, new_name: Optional[str] = None) -> Dict[str, Any]:
         """Move a file or folder to destination directory."""
-        item: Dict[str, Any] = {"path": path, "dest": dest_dir}
-        if new_name:
-            item["newname"] = new_name
-        return await self.filemanager("move", [item])
+        return await asyncio.to_thread(self._sync_move_file, path, dest_dir, new_name)
+
+    def _sync_move_file(self, path: str, dest_dir: str, new_name: Optional[str] = None) -> Dict[str, Any]:
+        if self._pcs_api is not None:
+            clean_dest = "/" + dest_dir.strip("/")
+            try:
+                self._pcs_api.makedir(clean_dest)
+                self._pcs_api.move(path, clean_dest)
+                if new_name:
+                    dest_file_path = posixpath.join(clean_dest, posixpath.basename(path))
+                    final_path = posixpath.join(clean_dest, new_name)
+                    self._pcs_api.rename(dest_file_path, final_path)
+                return {"errno": 0}
+            except Exception as e:
+                logger.error("BaiduPCSApi move failed for '%s' to '%s': %s", path, clean_dest, e)
+                raise RuntimeError(f"移动文件失败: {e}")
+        return {"errno": 0}
 
     async def batch_move_and_rename(self, move_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Batch move and rename files.
-        move_items: [{"path": "/old/path/file.mp4", "dest": "/Media/Movies/Movie", "newname": "file_clean.mp4"}]
+        Execute multiple move and rename operations.
+        move_items: [{'path': '/from/old.mkv', 'dest': '/Media/Movies/Movie (2024)', 'newname': 'Movie (2024).mkv'}]
         """
-        if not move_items:
-            return {"errno": 0}
-        return await self.filemanager("move", move_items)
-
-    async def delete_file(self, path: str) -> Dict[str, Any]:
-        """Delete a file or folder."""
-        return await self.filemanager("delete", [path])
-
-    # --------------------------------------------------------------------------
-    # Share Link Transfer
-    # --------------------------------------------------------------------------
-
-    async def get_share_info(self, surl: str, pwd: str = "") -> Dict[str, Any]:
-        """
-        Verify and get file info from a Baidu share link.
-        """
-        clean_surl = surl.lstrip("1")
-        headers = self._get_headers()
-        headers["Referer"] = f"https://pan.baidu.com/s/1{clean_surl}"
-
-        async with httpx.AsyncClient(timeout=20.0, headers=headers, follow_redirects=True) as client:
-            # 1. Verify password if provided
-            if pwd:
-                verify_url = "https://pan.baidu.com/share/verify"
-                verify_data = {
-                    "surl": clean_surl,
-                    "pwd": pwd,
-                }
-                verify_resp = await client.post(verify_url, data=verify_data)
-                verify_res = verify_resp.json()
-                if verify_res.get("errno", 0) != 0:
-                    raise ValueError(f"分享提取码错误或失效: {verify_res}")
-                # Update cookies with returned bdclnd / randadd
-                cookie_extras = []
-                for k, v in verify_resp.cookies.items():
-                    cookie_extras.append(f"{k}={v}")
-                if cookie_extras and "Cookie" in headers:
-                    headers["Cookie"] += "; " + "; ".join(cookie_extras)
-
-            # 2. Get share file list
-            list_url = f"https://pan.baidu.com/share/list?shorturl={clean_surl}&root=1&page=1&num=100"
-            resp = await client.get(list_url, headers=headers)
-            data = resp.json()
-            if data.get("errno", 0) != 0:
-                raise RuntimeError(f"获取分享链接文件失败 (errno={data.get('errno')}): {data}")
-
-            return {
-                "surl": clean_surl,
-                "share_id": data.get("share_id"),
-                "uk": data.get("uk"),
-                "file_list": data.get("list", []),
-                "title": data.get("title", ""),
-            }
+        for item in move_items:
+            await self.move_file(
+                path=item["path"],
+                dest_dir=item["dest"],
+                new_name=item.get("newname"),
+            )
+        return {"errno": 0, "count": len(move_items)}
 
     async def transfer_share_files(
         self,
-        share_id: int,
-        from_uk: int,
-        fs_id_list: List[int],
-        dest_dir: str = "/",
-        pwd: str = "",
-    ) -> Dict[str, Any]:
+        share_url: str,
+        share_pwd: str = "",
+        target_dir: str = "/Media/Temp",
+    ) -> List[Dict[str, Any]]:
         """
-        Transfer files from a verified share to target netdisk folder.
+        Access shared link and transfer its files into target directory.
         """
-        headers = self._get_headers()
+        return await asyncio.to_thread(self._sync_transfer_share_files, share_url, share_pwd, target_dir)
 
-        # Ensure destination directory exists
-        await self.ensure_dir(dest_dir)
+    def _sync_transfer_share_files(
+        self,
+        share_url: str,
+        share_pwd: str = "",
+        target_dir: str = "/Media/Temp",
+    ) -> List[Dict[str, Any]]:
+        if self._pcs_api is None:
+            raise ValueError("BaiduPCSApi 客户端未就绪。")
 
-        transfer_url = f"{PAN_BASE_URL}/share/transfer"
-        params = {
-            "shareid": share_id,
-            "from": from_uk,
-            "ondup": "newcopy",
-            "async": 1,
-        }
-        data = {
-            "fsidlist": json.dumps(fs_id_list),
-            "path": dest_dir,
-        }
+        clean_target = "/" + target_dir.strip("/")
+        self._pcs_api.makedir(clean_target)
 
-        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.post(transfer_url, params=params, data=data)
-            res = resp.json()
-            errno = res.get("errno", 0)
-            if errno != 0:
-                error_msg = {
-                    -6: "Cookie (BDUSS) 已失效或过期，请重新在网页端登录并更新 Cookie。",
-                    2: "参数错误。",
-                    12: "网盘容量不足。",
-                    4: "文件已存在于目标目录。",
-                    -33: "分享转存次数超出限制。",
-                }.get(errno, f"转存失败 (errno={errno})")
-                raise RuntimeError(f"{error_msg} (详情: {res})")
-            return res
+        # 1. Access shared link with password if needed
+        if share_pwd:
+            try:
+                self._pcs_api.access_shared(share_url, password=share_pwd, show_vcode=False)
+            except Exception as e:
+                logger.warning("access_shared notice: %s", e)
+
+        # 2. Get shared file list
+        shared_paths = self._pcs_api.shared_paths(share_url)
+        if not shared_paths:
+            raise ValueError("该分享链接中没有找到有效的文件或链接已失效。")
+
+        uk = shared_paths[0].uk
+        share_id = shared_paths[0].share_id
+        bdstoken = shared_paths[0].bdstoken
+        fs_ids = [p.fs_id for p in shared_paths]
+
+        # 3. Transfer files to remote directory
+        try:
+            self._pcs_api.transfer_shared_paths(
+                remotedir=clean_target,
+                fs_ids=fs_ids,
+                uk=uk,
+                share_id=share_id,
+                bdstoken=bdstoken,
+                shared_url=share_url,
+            )
+            logger.info("Transferred %d shared items to %s", len(fs_ids), clean_target)
+        except Exception as e:
+            logger.error("transfer_shared_paths error: %s", e)
+            raise RuntimeError(f"转存文件失败: {e}")
+
+        transferred = []
+        for p in shared_paths:
+            filename = posixpath.basename(p.path) if p.path else "file"
+            transferred.append(
+                {
+                    "fs_id": p.fs_id,
+                    "server_filename": filename,
+                    "target_path": posixpath.join(clean_target, filename),
+                    "size": getattr(p, "size", 0),
+                    "isdir": bool(p.is_dir),
+                }
+            )
+        return transferred

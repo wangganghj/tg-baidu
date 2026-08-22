@@ -1,5 +1,7 @@
 # Core Dependencies
 python-telegram-bot[job-queue]>=21.0
+baidupcs-py>=0.7.0
+requests>=2.31.0
 httpx>=0.27.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
