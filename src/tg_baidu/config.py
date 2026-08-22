@@ -58,7 +58,7 @@ class SystemConfig(BaseModel):
 class WebConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable Web dashboard UI")
     host: str = Field(default="0.0.0.0", description="Web server bind host")
-    port: int = Field(default=8080, description="Web server bind port")
+    port: int = Field(default=8082, description="Web server bind port")
     auth_password: str = Field(default="", description="Optional password protection for web UI")
 
 

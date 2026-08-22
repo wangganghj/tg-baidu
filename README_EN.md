@@ -6,7 +6,7 @@
 
 ## ✨ Key Features
 
-- **🌐 Web Management Dashboard (Port 8080)**:
+- **🌐 Web Management Dashboard (Port 8082)**:
   - **Baidu OAuth2 Integration**: One-click OAuth login, auto callback redirect, real-time storage quota bar & VIP status.
   - **Netdisk Directory Browser & Picker**: Browse remote cloud folders visually, create new folders, and set destination folders for Movies/TV shows with 1 click.
   - **Bot & TMDB Settings Panel**: Live configuration for Bot Token, TMDB API Key, language, rename templates, and interactive TMDB search testing.

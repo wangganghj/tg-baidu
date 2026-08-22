@@ -64,6 +64,6 @@ web:
   # Web server listening host (0.0.0.0 for all interfaces)
   host: "0.0.0.0"
   # Web server listening port
-  port: 8080
+  port: 8082
   # Optional: Password protection for web management panel (leave blank for none)
   auth_password: ""
