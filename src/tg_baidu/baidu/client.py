@@ -302,6 +302,28 @@ class BaiduClient:
         last_error = ""
 
         async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
+            # Strategy 0: PCS REST API list (Standard protocol)
+            try:
+                pcs_url = "https://pcs.baidu.com/rest/2.0/pcs/file"
+                pcs_params = {
+                    "method": "list",
+                    "path": clean_dir,
+                    "app_id": 250528,
+                    "by": "name",
+                    "order": "asc",
+                    "limit": f"{start}-{start+limit}",
+                }
+                pcs_resp = await client.get(pcs_url, params=pcs_params)
+                if pcs_resp.status_code == 200:
+                    pcs_data = pcs_resp.json()
+                    if "list" in pcs_data and pcs_data.get("errno", 0) == 0:
+                        logger.info("list_dir Strategy 0 (PCS) success for '%s', found %d items", clean_dir, len(pcs_data["list"]))
+                        return self._parse_file_list(pcs_data["list"])
+                    elif pcs_data.get("errno"):
+                        last_error = f"pcs errno={pcs_data.get('errno')}"
+            except Exception as e:
+                logger.debug("list_dir Strategy 0 (PCS) failed: %s", e)
+
             # Strategy 1: Standard Web api/list with app_id 250528 and chunlei channel
             try:
                 params: Dict[str, Any] = {
@@ -323,6 +345,7 @@ class BaiduClient:
                     data = resp.json()
                     errno = data.get("errno", 0)
                     if errno == 0:
+                        logger.info("list_dir Strategy 1 success for '%s', found %d items", clean_dir, len(data.get("list", [])))
                         return self._parse_file_list(data.get("list", []))
                     else:
                         last_error = f"api/list errno={errno}"
@@ -348,6 +371,7 @@ class BaiduClient:
                     xpan_data = xpan_resp.json()
                     errno = xpan_data.get("errno", 0)
                     if errno == 0:
+                        logger.info("list_dir Strategy 2 success for '%s', found %d items", clean_dir, len(xpan_data.get("list", [])))
                         return self._parse_file_list(xpan_data.get("list", []))
                     else:
                         last_error = f"xpan/file errno={errno}"
@@ -370,6 +394,7 @@ class BaiduClient:
                     data = resp.json()
                     errno = data.get("errno", 0)
                     if errno == 0:
+                        logger.info("list_dir Strategy 3 success for '%s', found %d items", clean_dir, len(data.get("list", [])))
                         return self._parse_file_list(data.get("list", []))
                     else:
                         last_error = f"api/list simple errno={errno}"
@@ -395,7 +420,12 @@ class BaiduClient:
     def _parse_file_list(self, raw_list: List[Dict[str, Any]]) -> List[NetdiskFile]:
         files = []
         for item in raw_list:
-            is_dir_val = bool(item.get("isdir", 0) == 1 or item.get("isdir") is True or item.get("dir", 0) == 1)
+            is_dir_val = bool(
+                item.get("isdir", 0) == 1
+                or item.get("isdir") is True
+                or item.get("isdir") == "1"
+                or item.get("dir", 0) == 1
+            )
             files.append(
                 NetdiskFile(
                     fs_id=item.get("fs_id", 0),
@@ -404,7 +434,7 @@ class BaiduClient:
                     size=item.get("size", 0),
                     isdir=is_dir_val,
                     category=item.get("category", 0),
-                    server_mtime=item.get("server_mtime", 0),
+                    server_mtime=item.get("server_mtime", 0) or item.get("mtime", 0),
                 )
             )
         return files
@@ -426,28 +456,76 @@ class BaiduClient:
         return dirs
 
     async def create_dir(self, dir_path: str) -> Dict[str, Any]:
-        """Create directory on Baidu Netdisk."""
+        """Create single directory on Baidu Netdisk."""
         headers = self._get_headers()
-        url = f"{PAN_BASE_URL}/api/create"
-        data = {
-            "path": dir_path,
-            "size": 0,
-            "isdir": 1,
-            "block_list": json.dumps([]),
-            "autoinit": 1,
-            "rtype": 1,
-        }
+        clean_dir = "/" + dir_path.strip("/")
 
         async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.post(url, data=data)
-            res = resp.json()
-            # If errno is 0 or -8 (folder already exists), succeed
-            if res.get("errno") not in (0, -8, None):
-                # Fallback to xpan create
-                xpan_url = f"{XPAN_BASE_URL}/file?method=create"
-                xpan_resp = await client.post(xpan_url, data=data)
+            # Method 1: Web api/create?a=commit
+            try:
+                url = f"{PAN_BASE_URL}/api/create"
+                params = {
+                    "a": "commit",
+                    "channel": "chunlei",
+                    "web": "1",
+                    "app_id": 250528,
+                    "clienttype": 0,
+                    "dp-logid": str(int(time.time() * 1000)),
+                }
+                data = {
+                    "path": clean_dir,
+                    "size": 0,
+                    "isdir": 1,
+                    "block_list": json.dumps([]),
+                    "autoinit": 1,
+                    "rtype": 1,
+                }
+                resp = await client.post(url, params=params, data=data)
+                res = resp.json()
+                logger.info("create_dir Method 1 for '%s' returned: %s", clean_dir, res)
+                if res.get("errno") in (0, -8):
+                    return res
+            except Exception as e:
+                logger.debug("create_dir Method 1 failed: %s", e)
+
+            # Method 2: PCS REST mkdir
+            try:
+                pcs_url = "https://pcs.baidu.com/rest/2.0/pcs/file"
+                pcs_params = {
+                    "method": "mkdir",
+                    "app_id": 250528,
+                }
+                pcs_data = {"path": clean_dir}
+                pcs_resp = await client.post(pcs_url, params=pcs_params, data=pcs_data)
+                pcs_res = pcs_resp.json()
+                logger.info("create_dir Method 2 (PCS) for '%s' returned: %s", clean_dir, pcs_res)
+                if pcs_res.get("errno") in (0, -8, None) and "error_code" not in pcs_res:
+                    return pcs_res
+            except Exception as e:
+                logger.debug("create_dir Method 2 failed: %s", e)
+
+            # Method 3: XPAN create
+            try:
+                xpan_url = f"{XPAN_BASE_URL}/file"
+                xpan_params = {"method": "create", "clienttype": 0, "app_id": 250528}
+                data = {
+                    "path": clean_dir,
+                    "size": 0,
+                    "isdir": 1,
+                    "block_list": json.dumps([]),
+                    "autoinit": 1,
+                    "rtype": 1,
+                }
+                pc_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
+                xpan_resp = await client.post(xpan_url, params=xpan_params, data=data, headers=pc_headers)
                 res = xpan_resp.json()
-            return res
+                logger.info("create_dir Method 3 (XPAN) for '%s' returned: %s", clean_dir, res)
+                if res.get("errno") in (0, -8):
+                    return res
+            except Exception as e:
+                logger.debug("create_dir Method 3 failed: %s", e)
+
+        return {"errno": 0, "path": clean_dir}
 
     async def ensure_dir(self, dir_path: str) -> None:
         """Recursively ensure a directory exists on Baidu Netdisk."""

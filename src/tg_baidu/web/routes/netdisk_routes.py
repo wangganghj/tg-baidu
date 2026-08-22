@@ -31,15 +31,20 @@ async def list_directories(
     """List sub-directories of a directory on Baidu Netdisk."""
     baidu_client = request.app.state.baidu_client
     try:
-        clean_path = "/" + path.strip("/")
+        clean_path = "/" + path.strip("/") if path != "/" else "/"
         dirs = await baidu_client.list_directories(clean_path)
         return {
             "current_path": clean_path,
             "directories": dirs,
+            "count": len(dirs),
         }
     except Exception as e:
         logger.exception("Failed to list directories at %s: %s", path, e)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "current_path": path,
+            "directories": [],
+            "error": str(e),
+        }
 
 
 @router.post("/mkdir")
@@ -47,12 +52,12 @@ async def create_directory(
     payload: CreateDirRequest,
     request: Request,
 ) -> Dict[str, Any]:
-    """Create a new folder on Baidu Netdisk."""
+    """Create a new folder recursively on Baidu Netdisk."""
     baidu_client = request.app.state.baidu_client
     try:
         clean_path = "/" + payload.path.strip("/")
-        res = await baidu_client.create_dir(clean_path)
-        return {"success": True, "path": clean_path, "result": res}
+        await baidu_client.ensure_dir(clean_path)
+        return {"success": True, "path": clean_path}
     except Exception as e:
         logger.exception("Failed to create directory %s: %s", payload.path, e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -63,9 +68,10 @@ async def set_target_dir(
     payload: SetTargetDirRequest,
     request: Request,
 ) -> Dict[str, Any]:
-    """Update Movie or TV default directory in config and database."""
+    """Update Movie or TV default directory in config and database, and auto-create folder."""
     config = request.app.state.config
     db = request.app.state.db
+    baidu_client = request.app.state.baidu_client
 
     clean_path = "/" + payload.path.strip("/")
     if payload.dir_type == "movie":
@@ -74,6 +80,13 @@ async def set_target_dir(
         config.media.tv_dir = clean_path
     else:
         raise HTTPException(status_code=400, detail="Invalid dir_type. Must be 'movie' or 'tv'.")
+
+    # Automatically ensure directory exists on Baidu Netdisk
+    try:
+        if baidu_client.is_configured():
+            await baidu_client.ensure_dir(clean_path)
+    except Exception as e:
+        logger.warning("Auto ensure_dir failed during set_target_dir: %s", e)
 
     # Update admin user settings in database if admin_user_id exists
     if config.telegram.admin_user_id:
