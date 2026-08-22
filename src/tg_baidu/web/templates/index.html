@@ -864,9 +864,15 @@
                     try {
                         const res = await fetch('/api/netdisk/dirs?path=' + encodeURIComponent(path));
                         const data = await res.json();
-                        this.netdiskDirs = data.directories || [];
+                        if (data.directories) {
+                            this.netdiskDirs = data.directories;
+                        }
+                        if (data.error) {
+                            console.warn('Directory notice:', data.error);
+                        }
                     } catch (e) {
                         console.error('Failed to list directories', e);
+                        this.showToast('❌ 加载目录请求失败: ' + e, 'error');
                     } finally {
                         this.loadingDirs = false;
                     }
@@ -977,8 +983,8 @@
                         });
                         if (res.ok) {
                             this.showToast('✅ 设置已保存生效！');
-                            await this.fetchAuthStatus();
-                            await this.fetchSettings();
+                            this.fetchAuthStatus();
+                            this.fetchSettings();
                         } else {
                             const errData = await res.json();
                             this.showToast('❌ 保存失败: ' + (errData.detail || '未知错误'), 'error');

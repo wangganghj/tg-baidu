@@ -67,9 +67,11 @@ def parse_and_clean_cookie(raw_input: str) -> Tuple[str, str, str, Dict[str, str
 
     stoken = cookies_dict.get("STOKEN", "")
 
-    # Ensure BDUSS_BFESS is present
+    # Ensure essential cookies are present
     if bduss and "BDUSS_BFESS" not in cookies_dict:
         cookies_dict["BDUSS_BFESS"] = bduss
+    if "PANWEB" not in cookies_dict:
+        cookies_dict["PANWEB"] = "1"
 
     # Build standard Cookie header string
     cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
@@ -125,7 +127,7 @@ class NetdiskUserInfo:
 
 class BaiduClient:
     """
-    Baidu Netdisk client utilizing BaiduPCSApi with non-blocking execution.
+    Baidu Netdisk client utilizing BaiduPCSApi with multi-tier fallback for directory browsing and accurate VIP detection.
     """
 
     def __init__(
@@ -190,7 +192,7 @@ class BaiduClient:
         return bool(self.bduss or self.cookies_dict)
 
     async def get_user_info(self) -> NetdiskUserInfo:
-        """Verify cookie and retrieve user information."""
+        """Verify cookie and retrieve accurate user information & VIP status."""
         if not self.is_configured():
             raise ValueError("尚未配置百度网盘 Cookie 或 BDUSS，请先在网页中绑定。")
 
@@ -203,32 +205,79 @@ class BaiduClient:
         # 1. First verify connection and fetch quota using Baidu PCS API
         self._sync_get_quota()
 
-        # 2. Fetch user profile from pan.baidu.com loginInfo
+        # 2. Fetch user profile and VIP status from pan APIs
         name = "百度网盘用户"
         uk = 0
         vip_type = 0
         avatar_url = ""
 
+        session = self._pcs_api._baidupcs._session
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://pan.baidu.com/disk/home",
+        }
+
+        # Strategy A: xpan/nas?method=uinfo (Most accurate VIP & SVIP info)
         try:
-            session = self._pcs_api._baidupcs._session
-            resp = session.get(
-                "https://pan.baidu.com/api/loginInfo",
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer": "https://pan.baidu.com/disk/home",
-                },
-                timeout=10,
-            )
+            resp = session.get("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo", headers=headers, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                if data.get("errno") == 0 or "login_info" in data:
-                    linfo = data.get("login_info", {})
-                    name = linfo.get("baidu_name") or linfo.get("netdisk_name") or name
-                    uk = linfo.get("uk") or 0
-                    avatar_url = linfo.get("avatar_url") or ""
-                    vip_type = linfo.get("vip_type") or 0
+                if data.get("errno") == 0 or "netdisk_name" in data or "baidu_name" in data:
+                    name = data.get("netdisk_name") or data.get("baidu_name") or name
+                    uk = data.get("uk") or 0
+                    avatar_url = data.get("avatar_url") or ""
+                    is_svip = data.get("is_svip")
+                    is_vip = data.get("is_vip")
+                    raw_vip_type = data.get("vip_type")
+
+                    if is_svip == 1 or raw_vip_type == 2:
+                        vip_type = 2
+                    elif is_vip == 1 or raw_vip_type == 1:
+                        vip_type = 1
+                    logger.info("Fetched user profile via xpan/nas: name=%s, vip_type=%s", name, vip_type)
         except Exception as e:
-            logger.debug("Failed to fetch pan.baidu.com loginInfo: %s", e)
+            logger.debug("xpan/nas uinfo lookup: %s", e)
+
+        # Strategy B: pan.baidu.com/api/loginInfo fallback
+        if not uk or vip_type == 0:
+            try:
+                resp = session.get("https://pan.baidu.com/api/loginInfo", headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    linfo = data.get("login_info", {})
+                    if linfo:
+                        if name == "百度网盘用户":
+                            name = linfo.get("baidu_name") or linfo.get("netdisk_name") or name
+                        if not uk:
+                            uk = linfo.get("uk") or 0
+                        if not avatar_url:
+                            avatar_url = linfo.get("avatar_url") or ""
+                        # Check identity_type or is_svip
+                        if linfo.get("identity_type") == 2 or linfo.get("vip_type") == 2 or linfo.get("is_svip") == 1:
+                            vip_type = 2
+                        elif (linfo.get("identity_type") == 1 or linfo.get("vip_type") == 1 or linfo.get("is_vip") == 1) and vip_type != 2:
+                            vip_type = 1
+            except Exception as e:
+                logger.debug("pan loginInfo lookup: %s", e)
+
+        # Strategy C: membership query
+        if vip_type == 0:
+            try:
+                resp = session.get("https://pan.baidu.com/rest/2.0/membership/user?method=query&app_id=250528&web=1", headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    mdata = resp.json()
+                    for prod in mdata.get("product_infos", []):
+                        cluster_type = str(prod.get("cluster_type", "")).lower()
+                        product_name = str(prod.get("product_name", "")).lower()
+                        if "svip" in cluster_type or "svip" in product_name or "超级会员" in product_name:
+                            if prod.get("status") == 0 or prod.get("end_time", 0) > 0:
+                                vip_type = 2
+                                break
+                        elif "vip" in cluster_type or "vip" in product_name or "会员" in product_name:
+                            if prod.get("status") == 0 or prod.get("end_time", 0) > 0:
+                                vip_type = 1
+            except Exception as e:
+                logger.debug("membership query lookup: %s", e)
 
         return NetdiskUserInfo(
             baidu_name=name,
@@ -271,33 +320,109 @@ class BaiduClient:
         start: int = 0,
         limit: int = 1000,
     ) -> List[NetdiskFile]:
-        """List files and folders in directory."""
+        """List files and folders in directory with multi-tier fallback."""
         return await asyncio.to_thread(self._sync_list_dir, dir_path)
 
     def _sync_list_dir(self, dir_path: str) -> List[NetdiskFile]:
         clean_dir = "/" + dir_path.strip("/") if dir_path != "/" else "/"
-        if self._pcs_api is not None:
-            try:
-                pcs_files = self._pcs_api.list(clean_dir)
-                result = []
-                for f in pcs_files:
-                    filename = getattr(f, "server_filename", "") or (posixpath.basename(f.path) if f.path else "")
-                    result.append(
-                        NetdiskFile(
-                            fs_id=f.fs_id,
-                            path=f.path,
-                            server_filename=filename,
-                            size=getattr(f, "size", 0),
-                            isdir=bool(f.is_dir),
-                            category=getattr(f, "category", 0),
-                            server_mtime=getattr(f, "server_mtime", 0) or getattr(f, "mtime", 0),
+        if self._pcs_api is None:
+            return []
+
+        session = self._pcs_api._baidupcs._session
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://pan.baidu.com/disk/home",
+        }
+
+        # Strategy 1: Standard Web Pan API (pan.baidu.com/api/list)
+        try:
+            params = {
+                "dir": clean_dir,
+                "num": 1000,
+                "order": "name",
+                "desc": 0,
+                "clienttype": 0,
+                "app_id": 250528,
+                "web": 1,
+            }
+            resp = session.get("https://pan.baidu.com/api/list", params=params, headers=headers, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("errno") == 0 and "list" in data:
+                    result = []
+                    for item in data["list"]:
+                        isdir = bool(item.get("isdir") in (1, "1", True) or item.get("dir") in (1, "1", True))
+                        filename = item.get("server_filename") or posixpath.basename(item.get("path", ""))
+                        result.append(
+                            NetdiskFile(
+                                fs_id=int(item.get("fs_id", 0)),
+                                path=item.get("path", posixpath.join(clean_dir, filename)),
+                                server_filename=filename,
+                                size=int(item.get("size", 0)),
+                                isdir=isdir,
+                                category=int(item.get("category", 0)),
+                                server_mtime=int(item.get("server_mtime", 0) or item.get("mtime", 0)),
+                            )
                         )
+                    logger.info("list_dir Strategy 1 (pan/api/list) for '%s' returned %d items.", clean_dir, len(result))
+                    return result
+        except Exception as e:
+            logger.debug("list_dir Strategy 1 failed: %s", e)
+
+        # Strategy 2: BaiduPCSApi.list (pcs.baidu.com/rest/2.0/pcs/file?method=list)
+        try:
+            pcs_files = self._pcs_api.list(clean_dir)
+            result = []
+            for f in pcs_files:
+                filename = getattr(f, "server_filename", "") or (posixpath.basename(f.path) if f.path else "")
+                result.append(
+                    NetdiskFile(
+                        fs_id=f.fs_id,
+                        path=f.path,
+                        server_filename=filename,
+                        size=getattr(f, "size", 0),
+                        isdir=bool(f.is_dir),
+                        category=getattr(f, "category", 0),
+                        server_mtime=getattr(f, "server_mtime", 0) or getattr(f, "mtime", 0),
                     )
-                logger.info("list_dir for '%s' returned %d items.", clean_dir, len(result))
-                return result
-            except Exception as e:
-                logger.error("BaiduPCSApi list_dir failed for '%s': %s", clean_dir, e)
-                raise RuntimeError(f"读取网盘目录 '{clean_dir}' 失败: {e}")
+                )
+            logger.info("list_dir Strategy 2 (pcs.baidu.com) for '%s' returned %d items.", clean_dir, len(result))
+            return result
+        except Exception as e:
+            logger.debug("list_dir Strategy 2 failed: %s", e)
+
+        # Strategy 3: XPAN list API (pan.baidu.com/rest/2.0/xpan/file?method=list)
+        try:
+            params = {
+                "method": "list",
+                "dir": clean_dir,
+                "num": 1000,
+                "order": "name",
+                "desc": 0,
+            }
+            resp = session.get("https://pan.baidu.com/rest/2.0/xpan/file", params=params, headers=headers, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("errno") == 0 and "list" in data:
+                    result = []
+                    for item in data["list"]:
+                        isdir = bool(item.get("isdir") in (1, "1", True))
+                        filename = item.get("server_filename") or posixpath.basename(item.get("path", ""))
+                        result.append(
+                            NetdiskFile(
+                                fs_id=int(item.get("fs_id", 0)),
+                                path=item.get("path", posixpath.join(clean_dir, filename)),
+                                server_filename=filename,
+                                size=int(item.get("size", 0)),
+                                isdir=isdir,
+                                category=int(item.get("category", 0)),
+                                server_mtime=int(item.get("server_mtime", 0) or item.get("mtime", 0)),
+                            )
+                        )
+                    logger.info("list_dir Strategy 3 (xpan/file) for '%s' returned %d items.", clean_dir, len(result))
+                    return result
+        except Exception as e:
+            logger.debug("list_dir Strategy 3 failed: %s", e)
 
         return []
 
@@ -324,6 +449,7 @@ class BaiduClient:
     def _sync_create_dir(self, dir_path: str) -> Dict[str, Any]:
         clean_dir = "/" + dir_path.strip("/")
         if self._pcs_api is not None:
+            # 1. Try BaiduPCSApi makedir
             try:
                 self._pcs_api.makedir(clean_dir)
                 logger.info("Created directory on Baidu Netdisk: %s", clean_dir)
@@ -332,15 +458,47 @@ class BaiduClient:
                 err = str(e)
                 if "-8" in err or "already exists" in err:
                     return {"errno": 0, "path": clean_dir}
-                logger.error("BaiduPCSApi makedir failed for '%s': %s", clean_dir, e)
-                raise RuntimeError(f"创建文件夹 '{clean_dir}' 失败: {e}")
+
+            # 2. Try Web Pan commit create
+            try:
+                session = self._pcs_api._baidupcs._session
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://pan.baidu.com/disk/home",
+                }
+                params = {
+                    "a": "commit",
+                    "channel": "chunlei",
+                    "web": 1,
+                    "app_id": 250528,
+                    "clienttype": 0,
+                }
+                data = {
+                    "path": clean_dir,
+                    "isdir": 1,
+                    "size": 0,
+                    "block_list": "[]",
+                    "autoinit": 1,
+                    "rtype": 1,
+                }
+                resp = session.post("https://pan.baidu.com/api/create", params=params, data=data, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    res_data = resp.json()
+                    if res_data.get("errno") in (0, -8):
+                        return {"errno": 0, "path": clean_dir}
+            except Exception as e:
+                logger.debug("create_dir Web fallback failed: %s", e)
 
         return {"errno": 0, "path": clean_dir}
 
     async def ensure_dir(self, dir_path: str) -> None:
-        """Recursively ensure a directory exists on Baidu Netdisk."""
+        """Recursively ensure each parent directory exists on Baidu Netdisk."""
         clean_dir = "/" + dir_path.strip("/")
-        await asyncio.to_thread(self._sync_create_dir, clean_dir)
+        parts = [p for p in clean_dir.split("/") if p]
+        accumulated = ""
+        for part in parts:
+            accumulated += "/" + part
+            await asyncio.to_thread(self._sync_create_dir, accumulated)
 
     async def rename_file(self, path: str, new_name: str) -> Dict[str, Any]:
         """Rename a file or folder."""
@@ -365,7 +523,7 @@ class BaiduClient:
         if self._pcs_api is not None:
             clean_dest = "/" + dest_dir.strip("/")
             try:
-                self._pcs_api.makedir(clean_dest)
+                self._sync_create_dir(clean_dest)
                 self._pcs_api.move(path, clean_dest)
                 if new_name:
                     dest_file_path = posixpath.join(clean_dest, posixpath.basename(path))
@@ -411,7 +569,7 @@ class BaiduClient:
             raise ValueError("BaiduPCSApi 客户端未就绪。")
 
         clean_target = "/" + target_dir.strip("/")
-        self._pcs_api.makedir(clean_target)
+        self._sync_create_dir(clean_target)
 
         # 1. Access shared link with password if needed
         if share_pwd:
