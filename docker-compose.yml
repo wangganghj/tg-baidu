@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tg-baidu:latest
+    image: ghcr.io/wangganghj/tg-baidu:latest
     container_name: tg-baidu
     restart: unless-stopped
     volumes:
