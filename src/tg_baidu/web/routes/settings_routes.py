@@ -23,10 +23,8 @@ class SettingsUpdateRequest(BaseModel):
     tmdb_api_key: Optional[str] = None
     tmdb_language: Optional[str] = None
     tmdb_include_adult: Optional[bool] = None
-    # Baidu App
-    baidu_app_key: Optional[str] = None
-    baidu_app_secret: Optional[str] = None
-    baidu_redirect_uri: Optional[str] = None
+    # Baidu Cookie
+    baidu_cookie: Optional[str] = None
     # Media
     media_movie_dir: Optional[str] = None
     media_tv_dir: Optional[str] = None
@@ -61,10 +59,9 @@ async def get_settings(request: Request) -> Dict[str, Any]:
             "include_adult": config.tmdb.include_adult,
         },
         "baidu": {
-            "app_key": config.baidu.app_key,
-            "app_secret": config.baidu.app_secret[:4] + "..." if len(config.baidu.app_secret) > 8 else config.baidu.app_secret,
-            "raw_app_secret": config.baidu.app_secret,
-            "redirect_uri": config.baidu.redirect_uri,
+            "cookie": config.baidu.cookie[:10] + "..." if len(config.baidu.cookie) > 15 else config.baidu.cookie,
+            "raw_cookie": config.baidu.cookie or config.baidu.bduss,
+            "bduss_hint": config.baidu.bduss[:8] + "..." if len(config.baidu.bduss) > 10 else config.baidu.bduss,
         },
         "media": {
             "movie_dir": config.media.movie_dir,
@@ -89,7 +86,8 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> D
     """Update settings in memory and persist."""
     config = request.app.state.config
     tmdb_client = request.app.state.tmdb_client
-    auth_manager = request.app.state.auth_manager
+    baidu_client = request.app.state.baidu_client
+    db = request.app.state.db
 
     # Telegram
     if payload.telegram_bot_token is not None:
@@ -110,16 +108,14 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> D
         config.tmdb.include_adult = payload.tmdb_include_adult
         tmdb_client.include_adult = payload.tmdb_include_adult
 
-    # Baidu
-    if payload.baidu_app_key is not None:
-        config.baidu.app_key = payload.baidu_app_key.strip()
-        auth_manager.app_key = payload.baidu_app_key.strip()
-    if payload.baidu_app_secret is not None:
-        config.baidu.app_secret = payload.baidu_app_secret.strip()
-        auth_manager.app_secret = payload.baidu_app_secret.strip()
-    if payload.baidu_redirect_uri is not None:
-        config.baidu.redirect_uri = payload.baidu_redirect_uri.strip()
-        auth_manager.redirect_uri = payload.baidu_redirect_uri.strip()
+    # Baidu Cookie
+    if payload.baidu_cookie is not None and payload.baidu_cookie.strip():
+        raw_cookie = payload.baidu_cookie.strip()
+        baidu_client.set_cookie(raw_cookie)
+        config.baidu.cookie = baidu_client.cookie
+        config.baidu.bduss = baidu_client.bduss
+        config.baidu.stoken = baidu_client.stoken
+        await db.save_baidu_cookie(cookie=baidu_client.cookie, bduss=baidu_client.bduss, stoken=baidu_client.stoken)
 
     # Media
     if payload.media_movie_dir is not None:

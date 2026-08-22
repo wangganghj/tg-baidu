@@ -27,23 +27,29 @@ class Database:
     async def init(self) -> None:
         """Initialize database schema."""
         async with aiosqlite.connect(self.db_path) as db:
-            # Baidu OAuth Tokens table
+            # Baidu Auth & Cookie table
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS baidu_auth (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_identifier TEXT UNIQUE NOT NULL,
-                    access_token TEXT NOT NULL,
+                    access_token TEXT,
                     refresh_token TEXT,
-                    expires_at REAL NOT NULL,
+                    expires_at REAL,
                     scope TEXT,
                     bduss TEXT,
                     stoken TEXT,
+                    cookie TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            # Add cookie column if upgrading from older schema
+            try:
+                await db.execute("ALTER TABLE baidu_auth ADD COLUMN cookie TEXT")
+            except Exception:
+                pass
 
             # User Settings table
             await db.execute(
@@ -91,6 +97,39 @@ class Database:
     # Baidu Auth Token Management
     # --------------------------------------------------------------------------
 
+    async def save_baidu_cookie(
+        self,
+        cookie: str,
+        bduss: str = "",
+        stoken: str = "",
+        user_identifier: str = "default",
+    ) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO baidu_auth (
+                    user_identifier, access_token, refresh_token, expires_at,
+                    scope, bduss, stoken, cookie, created_at, updated_at
+                )
+                VALUES (?, '', '', 0, '', ?, ?, ?, ?, ?)
+                ON CONFLICT(user_identifier) DO UPDATE SET
+                    cookie = excluded.cookie,
+                    bduss = CASE WHEN excluded.bduss != '' THEN excluded.bduss ELSE baidu_auth.bduss END,
+                    stoken = CASE WHEN excluded.stoken != '' THEN excluded.stoken ELSE baidu_auth.stoken END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_identifier,
+                    bduss,
+                    stoken,
+                    cookie,
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
     async def save_baidu_token(
         self,
         access_token: str,
@@ -99,6 +138,7 @@ class Database:
         scope: str = "",
         bduss: str = "",
         stoken: str = "",
+        cookie: str = "",
         user_identifier: str = "default",
     ) -> None:
         now = time.time()
@@ -108,14 +148,15 @@ class Database:
                 """
                 INSERT INTO baidu_auth (
                     user_identifier, access_token, refresh_token, expires_at,
-                    scope, bduss, stoken, created_at, updated_at
+                    scope, bduss, stoken, cookie, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_identifier) DO UPDATE SET
                     access_token = excluded.access_token,
                     refresh_token = excluded.refresh_token,
                     expires_at = excluded.expires_at,
                     scope = excluded.scope,
+                    cookie = CASE WHEN excluded.cookie != '' THEN excluded.cookie ELSE baidu_auth.cookie END,
                     bduss = CASE WHEN excluded.bduss != '' THEN excluded.bduss ELSE baidu_auth.bduss END,
                     stoken = CASE WHEN excluded.stoken != '' THEN excluded.stoken ELSE baidu_auth.stoken END,
                     updated_at = excluded.updated_at
@@ -128,6 +169,7 @@ class Database:
                     scope,
                     bduss,
                     stoken,
+                    cookie,
                     now,
                     now,
                 ),

@@ -52,18 +52,31 @@ async def run_services(config: Config) -> None:
     db = Database(config.system.database_path)
     await db.init()
 
-    # 2. Initialize Baidu Auth and Client
+    # 2. Initialize Baidu Auth and Client from DB and Config
     auth_manager = BaiduAuthManager(
         app_key=config.baidu.app_key,
         app_secret=config.baidu.app_secret,
         redirect_uri=config.baidu.redirect_uri,
         db=db,
     )
+
+    token_record = await db.get_baidu_token()
+    cookie_val = config.baidu.cookie
+    bduss_val = config.baidu.bduss
+    stoken_val = config.baidu.stoken
+    if token_record:
+        if token_record.get("cookie"):
+            cookie_val = token_record["cookie"]
+        if token_record.get("bduss"):
+            bduss_val = token_record["bduss"]
+        if token_record.get("stoken"):
+            stoken_val = token_record["stoken"]
+
     baidu_client = BaiduClient(
+        cookie=cookie_val,
+        bduss=bduss_val,
+        stoken=stoken_val,
         auth_manager=auth_manager,
-        fallback_token=config.baidu.access_token,
-        bduss=config.baidu.bduss,
-        stoken=config.baidu.stoken,
     )
 
     # 3. Initialize TMDB Client
