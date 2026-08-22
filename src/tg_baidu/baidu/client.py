@@ -285,56 +285,101 @@ class BaiduClient:
         start: int = 0,
         limit: int = 1000,
     ) -> List[NetdiskFile]:
-        """List files and folders in directory."""
+        """List files and folders in directory with multi-strategy fallback."""
         headers = self._get_headers()
-        url = f"{PAN_BASE_URL}/api/list"
-        params: Dict[str, Any] = {
-            "dir": dir_path,
-            "order": order,
-            "desc": desc,
-            "start": start,
-            "num": limit,
-            "web": "1",
-        }
+        clean_dir = "/" + dir_path.strip("/") if dir_path != "/" else "/"
 
         async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.get(url, params=params)
-            data = resp.json()
+            # Strategy 1: Standard Web api/list with app_id 250528
+            try:
+                params: Dict[str, Any] = {
+                    "dir": clean_dir,
+                    "order": order,
+                    "desc": desc,
+                    "start": start,
+                    "num": limit,
+                    "page": 1,
+                    "showempty": 0,
+                    "web": "1",
+                    "clienttype": 0,
+                    "app_id": 250528,
+                }
+                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("errno", 0) == 0:
+                        return self._parse_file_list(data.get("list", []))
+            except Exception as e:
+                logger.debug("api/list strategy 1 failed: %s", e)
 
-            # Fallback to xpan list if web list failed
-            if data.get("errno", 0) != 0:
-                xpan_url = f"{XPAN_BASE_URL}/file"
-                xpan_params = {
+            # Strategy 2: Web api/list simple params
+            try:
+                params = {
+                    "dir": clean_dir,
+                    "order": order,
+                    "desc": desc,
+                    "start": start,
+                    "num": limit,
+                }
+                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("errno", 0) == 0:
+                        return self._parse_file_list(data.get("list", []))
+            except Exception as e:
+                logger.debug("api/list strategy 2 failed: %s", e)
+
+            # Strategy 3: PC Client XPAN list endpoint with Netdisk UA
+            try:
+                pc_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
+                xpan_params: Dict[str, Any] = {
                     "method": "list",
-                    "dir": dir_path,
+                    "dir": clean_dir,
                     "order": order,
                     "desc": desc,
                     "start": start,
                     "limit": limit,
-                    "web": "web",
+                    "clienttype": 0,
+                    "app_id": 250528,
                 }
-                xpan_resp = await client.get(xpan_url, params=xpan_params)
-                xpan_data = xpan_resp.json()
-                if xpan_data.get("errno", 0) == 0:
-                    data = xpan_data
+                xpan_resp = await client.get(f"{XPAN_BASE_URL}/file", params=xpan_params, headers=pc_headers)
+                if xpan_resp.status_code == 200:
+                    xpan_data = xpan_resp.json()
+                    if xpan_data.get("errno", 0) == 0:
+                        return self._parse_file_list(xpan_data.get("list", []))
+            except Exception as e:
+                logger.debug("xpan file/list strategy 3 failed: %s", e)
 
-            if data.get("errno", 0) != 0:
-                raise RuntimeError(f"获取目录 '{dir_path}' 失败 (errno={data.get('errno')}): {data}")
+            # Strategy 4: categorylist (if browsing root)
+            if clean_dir == "/":
+                try:
+                    resp = await client.get(f"{PAN_BASE_URL}/api/categorylist?category=6&dir=%2F")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("errno", 0) == 0:
+                            return self._parse_file_list(data.get("info", data.get("list", [])))
+                except Exception as e:
+                    logger.debug("categorylist strategy 4 failed: %s", e)
 
-            files = []
-            for item in data.get("list", []):
-                files.append(
-                    NetdiskFile(
-                        fs_id=item.get("fs_id", 0),
-                        path=item.get("path", ""),
-                        server_filename=item.get("server_filename", ""),
-                        size=item.get("size", 0),
-                        isdir=bool(item.get("isdir", 0)),
-                        category=item.get("category", 0),
-                        server_mtime=item.get("server_mtime", 0),
-                    )
+            logger.warning("All directory listing strategies exhausted for '%s'", clean_dir)
+            return []
+
+    def _parse_file_list(self, raw_list: List[Dict[str, Any]]) -> List[NetdiskFile]:
+        files = []
+        for item in raw_list:
+            is_dir_val = bool(item.get("isdir", 0) == 1 or item.get("isdir") is True or item.get("dir", 0) == 1)
+            files.append(
+                NetdiskFile(
+                    fs_id=item.get("fs_id", 0),
+                    path=item.get("path", ""),
+                    server_filename=item.get("server_filename") or item.get("filename", ""),
+                    size=item.get("size", 0),
+                    isdir=is_dir_val,
+                    category=item.get("category", 0),
+                    server_mtime=item.get("server_mtime", 0),
                 )
-            return files
+            )
+        return files
 
     async def list_directories(self, dir_path: str = "/") -> List[Dict[str, Any]]:
         """List sub-directories in a specific path for the directory picker."""

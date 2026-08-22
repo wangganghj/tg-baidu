@@ -285,14 +285,75 @@
         <!-- ================================================================= -->
         <div x-show="currentTab === 'netdisk'" class="space-y-6">
             
+            <!-- Quick Direct Target Setup Card -->
+            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-700/60 pb-3">
+                    <div>
+                        <h3 class="text-base font-semibold text-white flex items-center space-x-2">
+                            <span>🎯</span>
+                            <span>指定影视归档保存目录</span>
+                        </h3>
+                        <p class="text-xs text-slate-400 mt-0.5">您可以直接在此输入自定义路径，或点击一键在网盘自动创建推荐的标准目录。</p>
+                    </div>
+                    <button type="button" @click="createDefaultMediaDirs()" :disabled="creatingDefaultDirs"
+                            class="bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 px-3.5 py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center space-x-1.5 shadow-sm">
+                        <span x-show="creatingDefaultDirs" class="animate-spin">🔄</span>
+                        <span>⚡ 一键在网盘创建并使用默认目录 (/Media/Movies 与 /Media/TV)</span>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                    <!-- Movie Dir Box -->
+                    <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700/60 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs font-semibold text-amber-300 flex items-center space-x-1.5">
+                                <span>🎬</span>
+                                <span>电影保存归档目录</span>
+                            </label>
+                            <span class="text-xs text-slate-500 font-mono" x-text="settings.media.movie_dir"></span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <input type="text" x-model="customMovieDir"
+                                   placeholder="/Media/Movies"
+                                   class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 font-mono">
+                            <button type="button" @click="saveCustomDir('movie', customMovieDir)"
+                                    class="bg-amber-600 hover:bg-amber-500 text-white px-3.5 py-2 rounded-xl text-xs font-medium transition-colors shadow">
+                                保存并创建
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- TV Dir Box -->
+                    <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700/60 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs font-semibold text-indigo-300 flex items-center space-x-1.5">
+                                <span>📺</span>
+                                <span>电视剧保存归档目录</span>
+                            </label>
+                            <span class="text-xs text-slate-500 font-mono" x-text="settings.media.tv_dir"></span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <input type="text" x-model="customTvDir"
+                                   placeholder="/Media/TV"
+                                   class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono">
+                            <button type="button" @click="saveCustomDir('tv', customTvDir)"
+                                    class="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-2 rounded-xl text-xs font-medium transition-colors shadow">
+                                保存并创建
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Directory Explorer Card -->
             <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
                     <div>
-                        <h2 class="text-lg font-semibold text-white flex items-center space-x-2">
+                        <h2 class="text-base font-semibold text-white flex items-center space-x-2">
                             <span>📁</span>
-                            <span>百度网盘目录浏览器与指定选择器</span>
+                            <span>百度网盘目录树与选择器</span>
                         </h2>
-                        <p class="text-sm text-slate-400 mt-1">可视化浏览网盘云端目录，并一键将当前选中的目录设为电影或剧集的转存归档位置。</p>
+                        <p class="text-xs text-slate-400 mt-1">浏览网盘云端目录，可随时新建文件夹或点选任意文件夹设为归档位置。</p>
                     </div>
 
                     <div class="flex items-center space-x-2">
@@ -303,7 +364,7 @@
                         </button>
                         <button @click="fetchDirectories(currentNetdiskPath)"
                                 class="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-xl text-xs transition-colors border border-slate-600">
-                            🔄
+                            🔄 刷新
                         </button>
                     </div>
                 </div>
@@ -324,7 +385,7 @@
 
                 <!-- Action Bar for Current Path -->
                 <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 mb-6">
-                    <span class="text-xs text-slate-400">快捷设定当前浏览目录:</span>
+                    <span class="text-xs text-slate-400">将当前浏览位置 (<span class="font-mono text-sky-400" x-text="currentNetdiskPath"></span>) 设为:</span>
                     <div class="flex items-center space-x-2">
                         <button @click="setAsTarget('movie', currentNetdiskPath)"
                                 class="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
@@ -338,15 +399,15 @@
                 </div>
 
                 <!-- Folder Explorer Grid -->
-                <div class="min-h-[240px]">
-                    <div x-show="loadingDirs" class="py-16 text-center text-slate-400">
+                <div class="min-h-[200px]">
+                    <div x-show="loadingDirs" class="py-12 text-center text-slate-400">
                         <span class="text-2xl animate-spin inline-block mb-2">🔄</span>
-                        <p class="text-sm">正在加载百度网盘目录...</p>
+                        <p class="text-xs">正在加载百度网盘目录...</p>
                     </div>
 
-                    <div x-show="!loadingDirs && netdiskDirs.length === 0" class="py-16 text-center text-slate-500">
+                    <div x-show="!loadingDirs && netdiskDirs.length === 0" class="py-12 text-center text-slate-500">
                         <p class="text-3xl mb-2">📂</p>
-                        <p class="text-sm">该目录下没有子文件夹</p>
+                        <p class="text-xs">该目录下暂无子文件夹（可在上方直接新建或使用快捷设定）</p>
                     </div>
 
                     <div x-show="!loadingDirs && netdiskDirs.length > 0" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -355,8 +416,8 @@
                                  class="group bg-slate-900/80 hover:bg-slate-700/60 border border-slate-700/60 hover:border-sky-500/50 rounded-xl p-3 cursor-pointer transition-all flex items-center space-x-3 shadow-md">
                                 <span class="text-2xl group-hover:scale-110 transition-transform">📁</span>
                                 <div class="truncate flex-1">
-                                    <h4 class="text-sm font-medium text-white truncate group-hover:text-sky-300 transition-colors" x-text="dir.name"></h4>
-                                    <span class="text-xs text-slate-500 font-mono" x-text="formatTime(dir.mtime)"></span>
+                                    <h4 class="text-xs font-medium text-white truncate group-hover:text-sky-300 transition-colors" x-text="dir.name"></h4>
+                                    <span class="text-[10px] text-slate-500 font-mono" x-text="formatTime(dir.mtime)"></span>
                                 </div>
                             </div>
                         </template>
@@ -709,6 +770,9 @@
                 selectedTask: null,
                 toast: { show: false, message: '', type: 'success' },
                 quickTask: { share_url: '', share_pwd: '' },
+                customMovieDir: '/Media/Movies',
+                customTvDir: '/Media/TV',
+                creatingDefaultDirs: false,
                 taskFilter: { status: 'ALL', search: '' },
                 taskStats: { total: 0, completed: 0, processing: 0, failed: 0 },
                 tasksList: [],
@@ -802,7 +866,7 @@
                         const data = await res.json();
                         this.netdiskDirs = data.directories || [];
                     } catch (e) {
-                        this.showToast('❌ 无法获取目录列表: ' + e, 'error');
+                        console.error('Failed to list directories', e);
                     } finally {
                         this.loadingDirs = false;
                     }
@@ -849,10 +913,42 @@
                     }
                 },
 
+                async saveCustomDir(dirType, path) {
+                    if (!path || !path.trim()) return;
+                    const cleanPath = path.trim().startsWith('/') ? path.trim() : '/' + path.trim();
+                    try {
+                        await fetch('/api/netdisk/mkdir', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ path: cleanPath })
+                        });
+                        await this.setAsTarget(dirType, cleanPath);
+                        this.showToast(`✅ 已设定并创建${dirType === 'movie' ? '电影' : '剧集'}目录: ${cleanPath}`);
+                        await this.fetchDirectories(this.currentNetdiskPath);
+                    } catch (e) {
+                        this.showToast('❌ 操作失败: ' + e, 'error');
+                    }
+                },
+
+                async createDefaultMediaDirs() {
+                    this.creatingDefaultDirs = true;
+                    try {
+                        await this.saveCustomDir('movie', '/Media/Movies');
+                        await this.saveCustomDir('tv', '/Media/TV');
+                        this.showToast('✅ 默认电影 (/Media/Movies) 与剧集 (/Media/TV) 目录已创建并配置成功！');
+                    } catch (e) {
+                        this.showToast('❌ 创建失败: ' + e, 'error');
+                    } finally {
+                        this.creatingDefaultDirs = false;
+                    }
+                },
+
                 async fetchSettings() {
                     try {
                         const res = await fetch('/api/settings');
                         this.settings = await res.json();
+                        if (this.settings.media.movie_dir) this.customMovieDir = this.settings.media.movie_dir;
+                        if (this.settings.media.tv_dir) this.customTvDir = this.settings.media.tv_dir;
                     } catch (e) {
                         console.error('Failed to load settings', e);
                     }
