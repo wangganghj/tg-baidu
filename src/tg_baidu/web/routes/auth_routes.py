@@ -93,7 +93,7 @@ async def save_cookie(payload: CookieAuthRequest, request: Request) -> Dict[str,
     if not raw_input:
         raise HTTPException(status_code=400, detail="请输入百度网盘 Cookie 或 BDUSS。")
 
-    cookie_str, bduss, stoken = parse_and_clean_cookie(raw_input)
+    cookie_str, bduss, stoken, _ = parse_and_clean_cookie(raw_input)
     if not bduss and not cookie_str:
         raise HTTPException(status_code=400, detail="未能识别有效的 Cookie 或 BDUSS，请检查输入格式。")
 

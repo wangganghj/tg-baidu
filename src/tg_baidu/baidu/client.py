@@ -125,7 +125,7 @@ class NetdiskUserInfo:
 
 class BaiduClient:
     """
-    Baidu Netdisk client utilizing BaiduPCSApi with robust error handling.
+    Baidu Netdisk client utilizing BaiduPCSApi with non-blocking execution.
     """
 
     def __init__(
@@ -154,17 +154,27 @@ class BaiduClient:
         return self.cookie_str
 
     def _init_pcs_api(self) -> None:
-        """Initialize BaiduPCSApi instance."""
+        """Initialize BaiduPCSApi instance without blocking network calls in __init__."""
         if not HAS_BAIDUPCS or not (self.bduss or self.cookies_dict):
             self._pcs_api = None
             return
 
         try:
+            # Pass user_id=1 to prevent BaiduPCS from making synchronous tieba login requests in __init__
             self._pcs_api = BaiduPCSApi(
                 bduss=self.bduss,
                 stoken=self.stoken or None,
                 cookies=self.cookies_dict or None,
+                user_id=1,
             )
+            # Update session headers with standard browser User-Agent
+            if hasattr(self._pcs_api, "_baidupcs") and hasattr(self._pcs_api._baidupcs, "_session"):
+                self._pcs_api._baidupcs._session.headers.update(
+                    {
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": "https://pan.baidu.com/disk/home",
+                    }
+                )
             logger.info("BaiduPCSApi initialized successfully.")
         except Exception as e:
             logger.error("Failed to initialize BaiduPCSApi: %s", e)
@@ -187,39 +197,46 @@ class BaiduClient:
         return await asyncio.to_thread(self._sync_get_user_info)
 
     def _sync_get_user_info(self) -> NetdiskUserInfo:
-        if self._pcs_api is not None:
-            try:
-                # 1. Fetch quota to verify connection
-                self._pcs_api.quota()
+        if self._pcs_api is None:
+            raise ValueError("BaiduPCS 引擎未初始化或不可用。")
 
-                # 2. Fetch user profile
-                name = "百度网盘用户"
-                uk = 0
-                vip_type = 0
+        # 1. First verify connection and fetch quota using Baidu PCS API
+        self._sync_get_quota()
 
-                try:
-                    uinfo = self._pcs_api.user_info()
-                    if uinfo:
-                        name = getattr(uinfo, "user_name", "") or getattr(uinfo, "baidu_name", "") or name
-                        uk = getattr(uinfo, "user_id", 0) or 0
-                except Exception as e:
-                    logger.debug("user_info lookup: %s", e)
+        # 2. Fetch user profile from pan.baidu.com loginInfo
+        name = "百度网盘用户"
+        uk = 0
+        vip_type = 0
+        avatar_url = ""
 
-                return NetdiskUserInfo(
-                    baidu_name=name,
-                    netdisk_name=name,
-                    uk=uk,
-                    vip_type=vip_type,
-                    avatar_url="",
-                )
-            except Exception as e:
-                err = str(e)
-                logger.warning("BaiduPCSApi get_user_info failed: %s", err)
-                if "-6" in err or "errno: -6" in err:
-                    raise RuntimeError("Cookie / BDUSS 无效或已过期 (errno=-6)。请在 pan.baidu.com 重新登录并复制最新 Cookie。")
-                raise RuntimeError(f"网盘连接失败: {err}")
+        try:
+            session = self._pcs_api._baidupcs._session
+            resp = session.get(
+                "https://pan.baidu.com/api/loginInfo",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://pan.baidu.com/disk/home",
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("errno") == 0 or "login_info" in data:
+                    linfo = data.get("login_info", {})
+                    name = linfo.get("baidu_name") or linfo.get("netdisk_name") or name
+                    uk = linfo.get("uk") or 0
+                    avatar_url = linfo.get("avatar_url") or ""
+                    vip_type = linfo.get("vip_type") or 0
+        except Exception as e:
+            logger.debug("Failed to fetch pan.baidu.com loginInfo: %s", e)
 
-        raise ValueError("BaiduPCS 引擎未初始化或不可用。")
+        return NetdiskUserInfo(
+            baidu_name=name,
+            netdisk_name=name,
+            uk=uk,
+            vip_type=vip_type,
+            avatar_url=avatar_url,
+        )
 
     async def get_quota(self) -> NetdiskQuota:
         """Fetch storage quota information."""
@@ -228,13 +245,20 @@ class BaiduClient:
     def _sync_get_quota(self) -> NetdiskQuota:
         if self._pcs_api is not None:
             try:
-                quota = self._pcs_api.quota()
-                total = quota[0] if isinstance(quota, (tuple, list)) else getattr(quota, "total", 0)
-                used = quota[1] if isinstance(quota, (tuple, list)) else getattr(quota, "used", 0)
+                pcs_quota = self._pcs_api.quota()
+                total = getattr(pcs_quota, "quota", 0)
+                if not total and isinstance(pcs_quota, (tuple, list)):
+                    total = pcs_quota[0]
+                used = getattr(pcs_quota, "used", 0)
+                if not used and isinstance(pcs_quota, (tuple, list)):
+                    used = pcs_quota[1]
                 free = max(0, total - used)
                 return NetdiskQuota(total=total, used=used, free=free)
             except Exception as e:
+                err = str(e)
                 logger.error("BaiduPCSApi get_quota failed: %s", e)
+                if "-6" in err or "errno: -6" in err:
+                    raise RuntimeError("Cookie / BDUSS 无效或已过期 (errno=-6)。请在 pan.baidu.com 重新登录并复制最新 Cookie。")
                 raise RuntimeError(f"获取网盘空间失败: {e}")
 
         return NetdiskQuota(total=0, used=0, free=0)
@@ -257,7 +281,7 @@ class BaiduClient:
                 pcs_files = self._pcs_api.list(clean_dir)
                 result = []
                 for f in pcs_files:
-                    filename = posixpath.basename(f.path) if f.path else getattr(f, "server_filename", "")
+                    filename = getattr(f, "server_filename", "") or (posixpath.basename(f.path) if f.path else "")
                     result.append(
                         NetdiskFile(
                             fs_id=f.fs_id,
@@ -423,7 +447,7 @@ class BaiduClient:
 
         transferred = []
         for p in shared_paths:
-            filename = posixpath.basename(p.path) if p.path else "file"
+            filename = getattr(p, "server_filename", "") or (posixpath.basename(p.path) if p.path else "file")
             transferred.append(
                 {
                     "fs_id": p.fs_id,

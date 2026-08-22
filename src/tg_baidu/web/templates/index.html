@@ -979,6 +979,9 @@
                             this.showToast('✅ 设置已保存生效！');
                             await this.fetchAuthStatus();
                             await this.fetchSettings();
+                        } else {
+                            const errData = await res.json();
+                            this.showToast('❌ 保存失败: ' + (errData.detail || '未知错误'), 'error');
                         }
                     } catch (e) {
                         this.showToast('❌ 保存失败: ' + e, 'error');
