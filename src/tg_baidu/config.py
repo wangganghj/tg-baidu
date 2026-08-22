@@ -24,13 +24,14 @@ class TMDBConfig(BaseModel):
 
 
 class BaiduConfig(BaseModel):
-    app_key: str = Field(default="", description="Baidu Netdisk AppKey (Client ID)")
-    app_secret: str = Field(default="", description="Baidu Netdisk AppSecret (Client Secret)")
-    redirect_uri: str = Field(default="oob", description="OAuth Redirect URI")
-    access_token: str = Field(default="", description="Baidu OAuth Access Token")
-    refresh_token: str = Field(default="", description="Baidu OAuth Refresh Token")
-    bduss: str = Field(default="", description="Optional BDUSS cookie for share operations")
+    cookie: str = Field(default="", description="Baidu Netdisk Cookie / BDUSS")
+    bduss: str = Field(default="", description="Baidu Netdisk BDUSS")
     stoken: str = Field(default="", description="Optional STOKEN cookie")
+    app_key: str = Field(default="", description="Optional AppKey")
+    app_secret: str = Field(default="", description="Optional AppSecret")
+    redirect_uri: str = Field(default="oob", description="OAuth Redirect URI")
+    access_token: str = Field(default="", description="Optional Access Token")
+    refresh_token: str = Field(default="", description="Optional Refresh Token")
 
 
 class MediaConfig(BaseModel):
@@ -109,13 +110,14 @@ class Config(BaseModel):
             "TG_ADMIN_USER_ID": ("telegram", "admin_user_id"),
             "TMDB_API_KEY": ("tmdb", "api_key"),
             "TMDB_LANGUAGE": ("tmdb", "language"),
+            "BAIDU_COOKIE": ("baidu", "cookie"),
+            "BAIDU_BDUSS": ("baidu", "bduss"),
+            "BAIDU_STOKEN": ("baidu", "stoken"),
             "BAIDU_APP_KEY": ("baidu", "app_key"),
             "BAIDU_APP_SECRET": ("baidu", "app_secret"),
             "BAIDU_REDIRECT_URI": ("baidu", "redirect_uri"),
             "BAIDU_ACCESS_TOKEN": ("baidu", "access_token"),
             "BAIDU_REFRESH_TOKEN": ("baidu", "refresh_token"),
-            "BAIDU_BDUSS": ("baidu", "bduss"),
-            "BAIDU_STOKEN": ("baidu", "stoken"),
             "MEDIA_MOVIE_DIR": ("media", "movie_dir"),
             "MEDIA_TV_DIR": ("media", "tv_dir"),
             "MEDIA_DEFAULT_DIR": ("media", "default_dir"),
