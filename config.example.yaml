@@ -1,0 +1,59 @@
+# ==============================================================================
+# tg-baidu Configuration File Example
+# Copy this file to config.yaml and fill in your credentials.
+# ==============================================================================
+
+telegram:
+  # Telegram Bot Token from @BotFather
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  # Optional: List of allowed Telegram User IDs. If empty, all users can interact or only admin
+  allowed_user_ids: []
+  # Primary Admin Telegram User ID (receives alerts, can run admin commands)
+  admin_user_id: 0
+
+tmdb:
+  # The Movie Database (TMDB) API Read Access Token or API Key (v3)
+  api_key: "YOUR_TMDB_API_KEY"
+  # Preferred metadata language (zh-CN, zh-TW, en-US, etc.)
+  language: "zh-CN"
+  # Include adult content in search results
+  include_adult: false
+
+baidu:
+  # Baidu Netdisk Open Platform AppKey (Client ID)
+  # Apply at: https://pan.baidu.com/union/
+  app_key: "YOUR_BAIDU_APP_KEY"
+  # Baidu Netdisk Open Platform AppSecret (Client Secret)
+  app_secret: "YOUR_BAIDU_APP_SECRET"
+  # OAuth Redirect URI configured in Baidu Open Platform
+  redirect_uri: "oob"
+  # Optional: Initial Access Token / Refresh Token (Can also be set via Telegram /login)
+  access_token: ""
+  refresh_token: ""
+  # Optional: Cookie / BDUSS (Fallback for share transfer if App permissions are restricted)
+  bduss: ""
+  stoken: ""
+
+media:
+  # Target root directories in Baidu Netdisk
+  movie_dir: "/Media/Movies"
+  tv_dir: "/Media/TV"
+  # Default fallback directory if type cannot be determined
+  default_dir: "/Media/Others"
+  # File renaming format templates
+  # Variables for Movie: {title}, {year}, {resolution}, {video_codec}, {audio_codec}, {ext}
+  movie_format: "{title} ({year})/{title} ({year}) [{resolution}].{ext}"
+  # Variables for TV: {title}, {year}, {season:02d}, {episode:02d}, {episode_title}, {resolution}, {ext}
+  tv_format: "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{episode:02d} - {episode_title}.{ext}"
+  # Auto transfer on match without confirmation button (default false for safety)
+  auto_transfer: false
+  # Delete temporary transfer folders after moving files
+  cleanup_temp_dirs: true
+
+system:
+  # SQLite database location
+  database_path: "data/tg_baidu.db"
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+  # Maximum concurrent transfer/rename tasks
+  max_concurrent_tasks: 3

@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  tg-baidu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-baidu:latest
+    container_name: tg-baidu
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    # network_mode: bridge
