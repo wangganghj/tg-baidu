@@ -1,5 +1,5 @@
 """
-OAuth2 and Baidu Account API routes.
+OAuth2, Device Code, and Baidu Account API routes.
 """
 
 from __future__ import annotations
@@ -20,10 +20,20 @@ class CodeAuthRequest(BaseModel):
 
 
 class DirectTokenRequest(BaseModel):
-    access_token: str
+    access_token: Optional[str] = ""
     refresh_token: Optional[str] = ""
     bduss: Optional[str] = ""
     stoken: Optional[str] = ""
+
+
+class QuickAppKeyRequest(BaseModel):
+    app_key: str
+    app_secret: str
+    redirect_uri: Optional[str] = "https://openapi.baidu.com/oauth/2.0/login_success"
+
+
+class DevicePollRequest(BaseModel):
+    device_code: str
 
 
 @router.get("/api/auth/status")
@@ -32,6 +42,7 @@ async def get_auth_status(request: Request) -> Dict[str, Any]:
     baidu_client = request.app.state.baidu_client
     db = request.app.state.db
     config = request.app.state.config
+    auth_manager = request.app.state.auth_manager
 
     token_record = await db.get_baidu_token()
     is_authenticated = bool(token_record and token_record.get("access_token")) or bool(config.baidu.access_token)
@@ -74,6 +85,8 @@ async def get_auth_status(request: Request) -> Dict[str, Any]:
 
     return {
         "is_authenticated": is_authenticated and uinfo_dict is not None,
+        "has_app_key": bool(auth_manager.app_key),
+        "app_key_hint": auth_manager.app_key[:4] + "..." if len(auth_manager.app_key) > 6 else auth_manager.app_key,
         "token_record": {
             "expires_at": token_record.get("expires_at") if token_record else None,
             "has_refresh_token": bool(token_record and token_record.get("refresh_token")),
@@ -86,12 +99,46 @@ async def get_auth_status(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/api/auth/login-url")
-async def get_login_url(request: Request) -> Dict[str, str]:
+async def get_login_url(request: Request) -> Dict[str, Any]:
     """Get Baidu OAuth authorization URL."""
     auth_manager = request.app.state.auth_manager
-    # Redirect back to the web server callback if available, or oob
-    url = auth_manager.get_authorization_url()
-    return {"url": url}
+    if not auth_manager.app_key:
+        return {
+            "has_app_key": False,
+            "url": None,
+            "message": "尚未配置百度 AppKey (Client ID)。请先配置 AppKey，或直接粘贴 Access Token / BDUSS 登录。",
+        }
+
+    try:
+        url = auth_manager.get_authorization_url()
+        return {"has_app_key": True, "url": url}
+    except Exception as e:
+        return {"has_app_key": False, "url": None, "message": str(e)}
+
+
+@router.post("/api/auth/set-app-key")
+async def set_app_key(payload: QuickAppKeyRequest, request: Request) -> Dict[str, Any]:
+    """Quickly configure Baidu AppKey and AppSecret."""
+    auth_manager = request.app.state.auth_manager
+    config = request.app.state.config
+
+    if not payload.app_key.strip():
+        raise HTTPException(status_code=400, detail="AppKey 不能为空。")
+
+    auth_manager.app_key = payload.app_key.strip()
+    auth_manager.app_secret = payload.app_secret.strip()
+    if payload.redirect_uri:
+        auth_manager.redirect_uri = payload.redirect_uri.strip()
+
+    config.baidu.app_key = auth_manager.app_key
+    config.baidu.app_secret = auth_manager.app_secret
+    config.baidu.redirect_uri = auth_manager.redirect_uri
+
+    return {
+        "success": True,
+        "message": "百度 AppKey 与 Secret 保存成功！",
+        "login_url": auth_manager.get_authorization_url(),
+    }
 
 
 @router.post("/api/auth/code")
@@ -101,14 +148,17 @@ async def submit_auth_code(payload: CodeAuthRequest, request: Request) -> Dict[s
     baidu_client = request.app.state.baidu_client
 
     if not payload.code.strip():
-        raise HTTPException(status_code=400, detail="Authorization code cannot be empty.")
+        raise HTTPException(status_code=400, detail="授权码 (Code) 不能为空。")
+
+    if not auth_manager.app_key:
+        raise HTTPException(status_code=400, detail="尚未配置 AppKey，无法通过授权码交换 Token。请先配置 AppKey 或直接输入 Access Token。")
 
     try:
         data = await auth_manager.exchange_code(payload.code.strip())
         uinfo = await baidu_client.get_user_info()
         return {
             "success": True,
-            "message": f"Successfully authorized as {uinfo.baidu_name}",
+            "message": f"成功绑定百度账号: {uinfo.baidu_name}",
             "user": {
                 "baidu_name": uinfo.baidu_name,
                 "vip_label": uinfo.vip_label,
@@ -121,29 +171,81 @@ async def submit_auth_code(payload: CodeAuthRequest, request: Request) -> Dict[s
 
 @router.post("/api/auth/token")
 async def submit_direct_token(payload: DirectTokenRequest, request: Request) -> Dict[str, Any]:
-    """Save manually provided Access Token or Cookie."""
+    """Save manually provided Access Token or BDUSS Cookie directly."""
     db = request.app.state.db
     baidu_client = request.app.state.baidu_client
+    config = request.app.state.config
 
-    if not payload.access_token.strip() and not payload.bduss.strip():
-        raise HTTPException(status_code=400, detail="Access Token or BDUSS is required.")
+    token_val = (payload.access_token or "").strip()
+    bduss_val = (payload.bduss or "").strip()
+
+    if not token_val and not bduss_val:
+        raise HTTPException(status_code=400, detail="Access Token 与 BDUSS 不能同时为空。")
 
     try:
-        await db.save_baidu_token(
-            access_token=payload.access_token.strip(),
-            refresh_token=payload.refresh_token.strip() if payload.refresh_token else "",
-            bduss=payload.bduss.strip() if payload.bduss else "",
-            stoken=payload.stoken.strip() if payload.stoken else "",
-        )
-        baidu_client.bduss = payload.bduss.strip() if payload.bduss else ""
-        baidu_client.stoken = payload.stoken.strip() if payload.stoken else ""
+        # If user provides BDUSS, we update client cookies
+        if bduss_val:
+            baidu_client.bduss = bduss_val
+            config.baidu.bduss = bduss_val
+        if payload.stoken:
+            baidu_client.stoken = payload.stoken.strip()
+            config.baidu.stoken = payload.stoken.strip()
+
+        if token_val:
+            config.baidu.access_token = token_val
+            await db.save_baidu_token(
+                access_token=token_val,
+                refresh_token=(payload.refresh_token or "").strip(),
+                bduss=bduss_val,
+                stoken=(payload.stoken or "").strip(),
+            )
+        elif bduss_val:
+            # Save dummy token record to hold BDUSS
+            await db.save_baidu_token(
+                access_token=token_val or "BDUSS_AUTH_MODE",
+                refresh_token="",
+                bduss=bduss_val,
+            )
+
         uinfo = await baidu_client.get_user_info()
         return {
             "success": True,
-            "message": f"Successfully configured token for {uinfo.baidu_name}",
+            "message": f"账号验证成功: {uinfo.baidu_name} ({uinfo.vip_label})",
+            "user": {
+                "baidu_name": uinfo.baidu_name,
+                "vip_label": uinfo.vip_label,
+            },
         }
     except Exception as e:
         logger.exception("Token verification failed: %s", e)
+        raise HTTPException(status_code=400, detail=f"验证失败: {e}")
+
+
+@router.post("/api/auth/device-code")
+async def request_device_code(request: Request) -> Dict[str, Any]:
+    """Request a Device Code for QR code or verification code login."""
+    auth_manager = request.app.state.auth_manager
+    try:
+        return await auth_manager.get_device_code()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/auth/device-poll")
+async def poll_device_code(payload: DevicePollRequest, request: Request) -> Dict[str, Any]:
+    """Poll device code authorization status."""
+    auth_manager = request.app.state.auth_manager
+    baidu_client = request.app.state.baidu_client
+    try:
+        res = await auth_manager.poll_device_token(payload.device_code)
+        if res.get("success"):
+            uinfo = await baidu_client.get_user_info()
+            res["user"] = {
+                "baidu_name": uinfo.baidu_name,
+                "vip_label": uinfo.vip_label,
+            }
+        return res
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -172,5 +274,13 @@ async def oauth_callback(
 async def logout(request: Request) -> Dict[str, bool]:
     """Clear stored tokens."""
     db = request.app.state.db
+    config = request.app.state.config
+    baidu_client = request.app.state.baidu_client
+
     await db.delete_baidu_token()
+    config.baidu.access_token = ""
+    config.baidu.refresh_token = ""
+    config.baidu.bduss = ""
+    baidu_client.bduss = ""
+    baidu_client.stoken = ""
     return {"success": True}

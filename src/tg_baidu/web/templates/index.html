@@ -168,7 +168,7 @@
                                     <p class="text-xs text-slate-400">UK: <span x-text="auth.user_info.uk"></span></p>
                                     <p class="text-xs text-emerald-400 mt-1 flex items-center">
                                         <span class="w-2 h-2 rounded-full bg-emerald-400 mr-1.5"></span>
-                                        已通过 OAuth2 授权接入
+                                        已成功接入百度网盘
                                     </p>
                                 </div>
                             </div>
@@ -178,7 +178,7 @@
                             <div class="py-6 text-center text-slate-400">
                                 <div class="text-4xl mb-2">🔒</div>
                                 <p class="text-sm font-medium">尚未连接百度网盘账号</p>
-                                <p class="text-xs text-slate-500 mt-1">请使用下方授权按钮进行绑定</p>
+                                <p class="text-xs text-slate-500 mt-1" x-text="auth.has_app_key ? '已就绪，点击下方按钮开始授权' : '请先配置 AppKey 或直接使用 Token 登录'"></p>
                             </div>
                         </template>
                     </div>
@@ -186,10 +186,17 @@
                     <!-- Auth Action Buttons -->
                     <div class="space-y-2 pt-4 border-t border-slate-700/60">
                         <template x-if="!auth.is_authenticated">
-                            <a :href="loginUrl" target="_blank"
-                               class="block w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 px-4 rounded-xl text-sm transition-colors shadow-lg shadow-blue-600/20">
-                                🔑 网页一键授权登录百度
-                            </a>
+                            <div class="space-y-2">
+                                <button type="button" @click="handleLoginClick()"
+                                        class="w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 px-4 rounded-xl text-sm transition-colors shadow-lg shadow-blue-600/20 flex items-center justify-center space-x-2">
+                                    <span>🔑</span>
+                                    <span x-text="auth.has_app_key ? '网页一键授权登录百度' : '绑定百度网盘账号 (快速入口)'"></span>
+                                </button>
+                                <button type="button" @click="showTokenModal = true"
+                                        class="w-full text-center bg-slate-700/70 hover:bg-slate-700 text-slate-300 font-medium py-2 px-4 rounded-xl text-xs transition-colors border border-slate-600">
+                                    ⚡ 直接粘贴 Token / BDUSS Cookie 登录 (免申请)
+                                </button>
+                            </div>
                         </template>
                         <template x-if="auth.is_authenticated">
                             <button @click="logoutBaidu()"
@@ -259,7 +266,7 @@
                             <span>🔐</span>
                             <span>授权码手动绑定</span>
                         </h3>
-                        <p class="text-xs text-slate-400 mb-4">若浏览器无法自动跳转回调，可在百度授权页面复制 <strong>Code 授权码</strong> 在此提交。</p>
+                        <p class="text-xs text-slate-400 mb-4">在百度授权成功页面复制 <strong>Code 授权码</strong> 在此提交换取 Token。</p>
 
                         <form @submit.prevent="submitAuthCode()" class="space-y-3">
                             <div>
@@ -269,14 +276,14 @@
                             </div>
                             <button type="submit" :disabled="submittingCode"
                                     class="w-full bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-medium py-2 px-4 rounded-xl text-sm transition-colors border border-slate-600">
-                                <span x-text="submittingCode ? '正在交换令牌...' : '提交授权码'"></span>
+                                <span x-text="submittingCode ? '正在交换令牌...' : '提交授权码 (Code)'"></span>
                             </button>
                         </form>
                     </div>
 
                     <div class="mt-4 pt-4 border-t border-slate-700/60 text-xs text-slate-400 flex items-center justify-between">
-                        <span>Token 状态:</span>
-                        <span class="text-emerald-400" x-text="auth.token_record && auth.token_record.has_refresh_token ? '自动续期中' : '静态配置'"></span>
+                        <span>AppKey: <span class="font-mono" :class="auth.has_app_key ? 'text-emerald-400' : 'text-rose-400'" x-text="auth.has_app_key ? (auth.app_key_hint || '已配置') : '未配置'"></span></span>
+                        <button @click="showAuthModal = true" class="text-sky-400 hover:underline">配置 AppKey</button>
                     </div>
                 </div>
 
@@ -668,6 +675,91 @@
         </div>
     </div>
 
+    <!-- Quick Token / BDUSS Modal -->
+    <div x-show="showTokenModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" x-cloak>
+        <div @click.away="showTokenModal = false" class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+                <h3 class="font-bold text-base text-white flex items-center space-x-2">
+                    <span>⚡</span>
+                    <span>直接使用 Access Token 或 BDUSS 登录 (免申请)</span>
+                </h3>
+                <button @click="showTokenModal = false" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <p class="text-xs text-slate-300">
+                如果您不想申请百度开发者应用，可直接输入已有的 <strong>Access Token</strong> 或从浏览器 Cookie 中复制 <strong>BDUSS</strong> 即可立即连接！
+            </p>
+
+            <form @submit.prevent="submitDirectToken()" class="space-y-3 pt-1">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Access Token (选填)</label>
+                    <input type="password" x-model="directAuth.access_token"
+                           placeholder="输入百度网盘 Access Token (如通过其他工具获取)"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">BDUSS Cookie (选填)</label>
+                    <input type="password" x-model="directAuth.bduss"
+                           placeholder="从浏览器 F12 -> Application -> Cookies -> pan.baidu.com 复制 BDUSS"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono">
+                </div>
+
+                <div class="pt-2 flex justify-end space-x-2">
+                    <button type="button" @click="showTokenModal = false"
+                            class="px-4 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-700">取消</button>
+                    <button type="submit" :disabled="submittingDirect"
+                            class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium py-2 px-5 rounded-xl text-xs transition-colors">
+                        <span x-text="submittingDirect ? '正在验证...' : '验证并登录'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Quick AppKey Configuration & OAuth Helper Modal -->
+    <div x-show="showAuthModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" x-cloak>
+        <div @click.away="showAuthModal = false" class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+                <h3 class="font-bold text-base text-white flex items-center space-x-2">
+                    <span>🔑</span>
+                    <span>配置百度网盘 AppKey 与授权</span>
+                </h3>
+                <button @click="showAuthModal = false" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 text-xs text-slate-300 space-y-1">
+                <strong class="text-sky-400 block">💡 如何获取 AppKey (Client ID):</strong>
+                <p>1. 登录 <a href="https://pan.baidu.com/union/" target="_blank" class="text-blue-400 underline">百度网盘开放平台</a> 创建应用。</p>
+                <p>2. 在应用概览中复制 <strong>AppKey</strong> 与 <strong>AppSecret</strong>。</p>
+                <p>3. 授权回调页填写: <code class="text-amber-300">https://openapi.baidu.com/oauth/2.0/login_success</code></p>
+            </div>
+
+            <form @submit.prevent="saveAppKeyAndAuth()" class="space-y-3 pt-1">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">AppKey (Client ID)</label>
+                    <input type="text" x-model="quickAppKey.app_key" required
+                           placeholder="粘贴在开放平台申请的 AppKey"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">AppSecret (Client Secret)</label>
+                    <input type="password" x-model="quickAppKey.app_secret" required
+                           placeholder="粘贴在开放平台申请的 AppSecret"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono">
+                </div>
+
+                <div class="pt-2 flex justify-end space-x-2">
+                    <button type="button" @click="showAuthModal = false"
+                            class="px-4 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-700">取消</button>
+                    <button type="submit"
+                            class="bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 px-5 rounded-xl text-xs transition-colors">
+                        保存并打开授权页面 🚀
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Application JavaScript -->
     <script>
         function dashboardApp() {
@@ -677,9 +769,12 @@
                 manualCode: '',
                 submittingCode: false,
                 submittingTask: false,
+                submittingDirect: false,
                 savingSettings: false,
                 loadingDirs: false,
                 testingTMDB: false,
+                showTokenModal: false,
+                showAuthModal: false,
                 tmdbTestQuery: '',
                 tmdbTestResults: [],
                 currentNetdiskPath: '/',
@@ -687,14 +782,16 @@
                 selectedTask: null,
                 toast: { show: false, message: '', type: 'success' },
                 quickTask: { share_url: '', share_pwd: '' },
+                directAuth: { access_token: '', bduss: '' },
+                quickAppKey: { app_key: '', app_secret: '', redirect_uri: 'https://openapi.baidu.com/oauth/2.0/login_success' },
                 taskFilter: { status: 'ALL', search: '' },
                 taskStats: { total: 0, completed: 0, processing: 0, failed: 0 },
                 tasksList: [],
-                auth: { is_authenticated: false, user_info: null, quota: null },
+                auth: { is_authenticated: false, has_app_key: false, app_key_hint: '', user_info: null, quota: null },
                 settings: {
                     telegram: { raw_bot_token: '', admin_user_id: 0 },
                     tmdb: { raw_api_key: '', language: 'zh-CN', include_adult: false },
-                    baidu: { app_key: '', raw_app_secret: '', redirect_uri: 'oob' },
+                    baidu: { app_key: '', raw_app_secret: '', redirect_uri: 'https://openapi.baidu.com/oauth/2.0/login_success' },
                     media: { movie_dir: '/Media/Movies', tv_dir: '/Media/TV', movie_format: '', tv_format: '', auto_transfer: false, cleanup_temp_dirs: true },
                 },
 
@@ -739,9 +836,66 @@
                     try {
                         const res = await fetch('/api/auth/login-url');
                         const data = await res.json();
-                        this.loginUrl = data.url;
+                        this.loginUrl = data.url || '';
                     } catch (e) {
                         console.error(e);
+                    }
+                },
+
+                handleLoginClick() {
+                    if (this.loginUrl) {
+                        window.open(this.loginUrl, '_blank');
+                    } else {
+                        this.showAuthModal = true;
+                    }
+                },
+
+                async saveAppKeyAndAuth() {
+                    try {
+                        const res = await fetch('/api/auth/set-app-key', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.quickAppKey)
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.showToast('✅ AppKey 保存成功！');
+                            this.showAuthModal = false;
+                            await this.fetchAuthStatus();
+                            await this.fetchLoginUrl();
+                            if (data.login_url) {
+                                window.open(data.login_url, '_blank');
+                            }
+                        } else {
+                            this.showToast('❌ ' + (data.detail || '保存失败'), 'error');
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 请求失败: ' + e, 'error');
+                    }
+                },
+
+                async submitDirectToken() {
+                    this.submittingDirect = true;
+                    try {
+                        const res = await fetch('/api/auth/token', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.directAuth)
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.showToast('✅ ' + data.message);
+                            this.showTokenModal = false;
+                            this.directAuth = { access_token: '', bduss: '' };
+                            await this.fetchAuthStatus();
+                            this.fetchDirectories('/');
+                        } else {
+                            this.showToast('❌ ' + (data.detail || '验证失败'), 'error');
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 请求失败: ' + e, 'error');
+                    } finally {
+                        this.submittingDirect = false;
                     }
                 },
 
