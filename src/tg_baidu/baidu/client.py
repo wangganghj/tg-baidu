@@ -22,15 +22,35 @@ PAN_BASE_URL = "https://pan.baidu.com"
 
 
 def clean_bduss_string(value: str) -> str:
-    """Clean BDUSS string copied from browser DevTools."""
+    """Clean BDUSS string copied from browser DevTools, headers, or storage."""
     if not value:
         return ""
     val = value.strip().strip('"').strip("'")
     if "BDUSS=" in val:
-        m = re.search(r"BDUSS=([^;]+)", val)
+        m = re.search(r"(?:^|;\s*)BDUSS=([^;]+)", val)
         if m:
             val = m.group(1).strip()
-    return val.rstrip(";")
+    elif "BDUSS_BFESS=" in val:
+        m = re.search(r"(?:^|;\s*)BDUSS_BFESS=([^;]+)", val)
+        if m:
+            val = m.group(1).strip()
+    val = val.strip(";").strip('"').strip("'").strip()
+    try:
+        if "%" in val:
+            val = urllib.parse.unquote(val)
+    except Exception:
+        pass
+    return val
+
+
+def extract_stoken_from_cookie(value: str) -> str:
+    """Extract STOKEN if user pasted full Cookie string."""
+    if not value:
+        return ""
+    m = re.search(r"(?:^|;\s*)STOKEN=([^;]+)", value)
+    if m:
+        return m.group(1).strip().strip(";").strip('"').strip("'")
+    return ""
 
 
 @dataclass
@@ -103,35 +123,37 @@ class BaiduClient:
         return None
 
     def _get_headers(self) -> Dict[str, str]:
-        return {
+        headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://pan.baidu.com/disk/home",
+            "Referer": "https://pan.baidu.com/disk/main",
+            "Origin": "https://pan.baidu.com",
             "Accept": "application/json, text/plain, */*",
         }
-
-    def _get_cookies(self) -> Dict[str, str]:
-        cookies: Dict[str, str] = {}
+        cookie_parts = []
         if self.bduss:
-            cookies["BDUSS"] = clean_bduss_string(self.bduss)
+            clean_val = clean_bduss_string(self.bduss)
+            cookie_parts.append(f"BDUSS={clean_val}")
+            cookie_parts.append(f"BDUSS_BFESS={clean_val}")
         if self.stoken:
-            cookies["STOKEN"] = self.stoken
-        return cookies
+            cookie_parts.append(f"STOKEN={self.stoken.strip()}")
+        if cookie_parts:
+            headers["Cookie"] = "; ".join(cookie_parts)
+        return headers
 
     async def get_user_info(self) -> NetdiskUserInfo:
         """Fetch user basic info via OAuth Token or BDUSS Cookie."""
         access_token = await self._get_access_token()
         headers = self._get_headers()
-        cookies = self._get_cookies()
 
         # 1. Try OAuth xpan endpoint if token is present
         if access_token:
             url = f"{XPAN_BASE_URL}/nas"
             params = {"method": "uinfo", "access_token": access_token}
             try:
-                async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+                async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
                     resp = await client.get(url, params=params)
                     data = resp.json()
                     if data.get("errno", 0) == 0:
@@ -147,65 +169,70 @@ class BaiduClient:
 
         # 2. Try Cookie BDUSS Web endpoints
         if self.bduss:
-            # Try template user endpoint
-            async with httpx.AsyncClient(timeout=15.0, headers=headers, cookies=cookies) as client:
+            async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
+                # A. Try gettemplateuser
                 try:
                     resp = await client.get("https://pan.baidu.com/api/gettemplateuser?web=1")
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        records = data.get("records", [])
-                        if records:
-                            rec = records[0]
-                            return NetdiskUserInfo(
-                                baidu_name=rec.get("uname", "百度网盘用户"),
-                                netdisk_name=rec.get("uname", "百度网盘用户"),
-                                uk=rec.get("uk", 0),
-                                vip_type=rec.get("vip_type", 0),
-                                avatar_url=rec.get("avatar_url", ""),
-                            )
-                        if "userinfo" in data:
-                            u = data["userinfo"]
-                            return NetdiskUserInfo(
-                                baidu_name=u.get("uname", "百度网盘用户"),
-                                netdisk_name=u.get("uname", "百度网盘用户"),
-                                uk=u.get("uk", 0),
-                                vip_type=u.get("vip_type", 0),
-                                avatar_url=u.get("avatar_url", ""),
-                            )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("errno", 0) == 0:
+                            records = data.get("records", [])
+                            if records:
+                                rec = records[0]
+                                return NetdiskUserInfo(
+                                    baidu_name=rec.get("uname", "百度网盘用户"),
+                                    netdisk_name=rec.get("uname", "百度网盘用户"),
+                                    uk=rec.get("uk", 0),
+                                    vip_type=rec.get("vip_type", 0),
+                                    avatar_url=rec.get("avatar_url", ""),
+                                )
+                            if "userinfo" in data:
+                                u = data["userinfo"]
+                                return NetdiskUserInfo(
+                                    baidu_name=u.get("uname", "百度网盘用户"),
+                                    netdisk_name=u.get("uname", "百度网盘用户"),
+                                    uk=u.get("uk", 0),
+                                    vip_type=u.get("vip_type", 0),
+                                    avatar_url=u.get("avatar_url", ""),
+                                )
                 except Exception as e:
                     logger.debug("gettemplateuser failed: %s", e)
 
-                # Try userinfo endpoint
+                # B. Try userinfo
                 try:
                     resp = await client.get("https://pan.baidu.com/api/userinfo")
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        return NetdiskUserInfo(
-                            baidu_name=data.get("username") or data.get("baidu_name", "百度网盘用户"),
-                            netdisk_name=data.get("username", "百度网盘用户"),
-                            uk=data.get("uk", 0),
-                            vip_type=data.get("vip_type", 0),
-                            avatar_url=data.get("avatar_url", ""),
-                        )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("errno", 0) == 0:
+                            return NetdiskUserInfo(
+                                baidu_name=data.get("username") or data.get("baidu_name", "百度网盘用户"),
+                                netdisk_name=data.get("username", "百度网盘用户"),
+                                uk=data.get("uk", 0),
+                                vip_type=data.get("vip_type", 0),
+                                avatar_url=data.get("avatar_url", ""),
+                            )
                 except Exception as e:
-                    logger.debug("userinfo endpoint failed: %s", e)
+                    logger.debug("userinfo failed: %s", e)
 
-                # Try quota check to at least confirm BDUSS is valid
+                # C. Try quota check (most reliable validator for BDUSS)
                 try:
                     resp = await client.get("https://pan.baidu.com/api/quota?checkexpire=1&checkfree=1")
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        return NetdiskUserInfo(
-                            baidu_name="百度网盘用户 (BDUSS)",
-                            netdisk_name="BDUSS 已连接",
-                            uk=0,
-                            vip_type=0,
-                            avatar_url="",
-                        )
-                    else:
-                        raise RuntimeError(f"BDUSS Cookie 无效或已过期 (errno={data.get('errno')})")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("errno", 0) == 0:
+                            return NetdiskUserInfo(
+                                baidu_name="百度网盘用户 (BDUSS 模式)",
+                                netdisk_name="BDUSS 已连接",
+                                uk=0,
+                                vip_type=0,
+                                avatar_url="",
+                            )
+                        elif data.get("errno") == -6:
+                            raise RuntimeError("BDUSS Cookie 无效或已过期 (errno=-6)。请确保当前浏览器已登录百度网盘并重新复制 BDUSS。")
+                        else:
+                            raise RuntimeError(f"BDUSS 验证失败 (errno={data.get('errno')}): {data}")
                 except Exception as e:
-                    raise RuntimeError(f"BDUSS 验证失败: {e}")
+                    raise RuntimeError(f"{e}")
 
         raise ValueError("未检测到有效的百度 Access Token 或 BDUSS Cookie。请先登录绑定。")
 
@@ -213,14 +240,13 @@ class BaiduClient:
         """Fetch storage quota information."""
         access_token = await self._get_access_token()
         headers = self._get_headers()
-        cookies = self._get_cookies()
 
         url = f"{PAN_BASE_URL}/api/quota"
         params: Dict[str, Any] = {"checkexpire": 1, "checkfree": 1}
         if access_token:
             params["access_token"] = access_token
 
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
             resp = await client.get(url, params=params)
             data = resp.json()
             if data.get("errno", 0) != 0:
@@ -242,7 +268,6 @@ class BaiduClient:
         """List files in directory using Token or BDUSS."""
         access_token = await self._get_access_token()
         headers = self._get_headers()
-        cookies = self._get_cookies()
 
         url = f"{XPAN_BASE_URL}/file"
         params: Dict[str, Any] = {
@@ -257,7 +282,7 @@ class BaiduClient:
         if access_token:
             params["access_token"] = access_token
 
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
             resp = await client.get(url, params=params)
             data = resp.json()
             if data.get("errno", 0) != 0:
@@ -314,7 +339,6 @@ class BaiduClient:
         """Create directory on Baidu Netdisk."""
         access_token = await self._get_access_token()
         headers = self._get_headers()
-        cookies = self._get_cookies()
 
         url = f"{XPAN_BASE_URL}/file"
         params: Dict[str, Any] = {"method": "create"}
@@ -330,7 +354,7 @@ class BaiduClient:
             "rtype": 1,  # 1 = skip/override if exists
         }
 
-        async with httpx.AsyncClient(timeout=15.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
             resp = await client.post(url, params=params, data=data)
             res = resp.json()
             # errno == 0 or -8 (already exists)
@@ -357,7 +381,6 @@ class BaiduClient:
         """
         access_token = await self._get_access_token()
         headers = self._get_headers()
-        cookies = self._get_cookies()
 
         url = f"{XPAN_BASE_URL}/file"
         params: Dict[str, Any] = {
@@ -372,7 +395,7 @@ class BaiduClient:
             "filelist": json.dumps(filelist, ensure_ascii=False),
         }
 
-        async with httpx.AsyncClient(timeout=30.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
             resp = await client.post(url, params=params, data=data)
             res = resp.json()
             if res.get("errno", 0) != 0 and self.bduss and not access_token:
@@ -420,11 +443,10 @@ class BaiduClient:
         Verify and get file info from a Baidu share link.
         """
         clean_surl = surl.lstrip("1")
-        cookies = self._get_cookies()
         headers = self._get_headers()
         headers["Referer"] = f"https://pan.baidu.com/s/1{clean_surl}"
 
-        async with httpx.AsyncClient(timeout=20.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=20.0, headers=headers, follow_redirects=True) as client:
             # 1. Verify pwd if provided
             if pwd:
                 verify_url = "https://pan.baidu.com/share/verify"
@@ -437,12 +459,15 @@ class BaiduClient:
                 if verify_res.get("errno", 0) != 0:
                     raise ValueError(f"分享提取码错误或失效: {verify_res}")
                 # Update cookies with returned bdclnd / randadd
+                cookie_extras = []
                 for k, v in verify_resp.cookies.items():
-                    cookies[k] = v
+                    cookie_extras.append(f"{k}={v}")
+                if cookie_extras and "Cookie" in headers:
+                    headers["Cookie"] += "; " + "; ".join(cookie_extras)
 
             # 2. Get share page or share list
             list_url = f"https://pan.baidu.com/share/list?shorturl={clean_surl}&root=1&page=1&num=100"
-            resp = await client.get(list_url, cookies=cookies)
+            resp = await client.get(list_url, headers=headers)
             data = resp.json()
             if data.get("errno", 0) != 0:
                 raise RuntimeError(f"获取分享链接文件失败 (errno={data.get('errno')}): {data}")
@@ -466,7 +491,6 @@ class BaiduClient:
         """
         Transfer files from a verified share to target netdisk folder.
         """
-        cookies = self._get_cookies()
         headers = self._get_headers()
 
         # Ensure destination directory exists
@@ -482,13 +506,13 @@ class BaiduClient:
             "path": dest_dir,
         }
 
-        async with httpx.AsyncClient(timeout=30.0, headers=headers, cookies=cookies) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
             resp = await client.post(transfer_url, params=params, data=data)
             res = resp.json()
             errno = res.get("errno", 0)
             if errno != 0:
                 error_msg = {
-                    -6: "Cookie (BDUSS) 或 Token 已过期，请重新登录获取。",
+                    -6: "Cookie (BDUSS) 或 Token 已过期，请重新获取粘贴。",
                     2: "参数错误。",
                     12: "网盘容量不足。",
                     4: "文件已存在于目标目录。",

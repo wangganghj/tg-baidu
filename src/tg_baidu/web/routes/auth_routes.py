@@ -226,7 +226,12 @@ async def submit_direct_token(payload: DirectTokenRequest, request: Request) -> 
         }
     except Exception as e:
         logger.exception("Token verification failed: %s", e)
-        raise HTTPException(status_code=400, detail=f"验证失败: {e}")
+        err_msg = str(e)
+        if "-6" in err_msg or "errno=-6" in err_msg:
+            detail_text = "BDUSS 验证无效或已过期 (errno=-6)。请重新在浏览器登录 pan.baidu.com 并复制最新的 BDUSS Value。"
+        else:
+            detail_text = f"验证失败: {err_msg}"
+        raise HTTPException(status_code=400, detail=detail_text)
 
 
 @router.post("/api/auth/device-code")
