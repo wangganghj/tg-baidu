@@ -690,21 +690,21 @@
             <div class="bg-slate-900/90 p-4 rounded-xl border border-slate-700/80 text-xs text-slate-300 space-y-2">
                 <div class="font-semibold text-sky-400 flex items-center space-x-1">
                     <span>📖</span>
-                    <span>如何获取 BDUSS (无需申请任何开发者应用):</span>
+                    <span>获取完整网盘 Cookie (包含目录浏览与转存权限):</span>
                 </div>
                 <ol class="list-decimal list-inside space-y-1 text-slate-300 text-xs pl-1">
                     <li>在电脑浏览器中打开并登录 <a href="https://pan.baidu.com" target="_blank" class="text-blue-400 underline">pan.baidu.com</a>。</li>
-                    <li>按键盘 <strong>F12</strong> 打开开发者工具，点击顶部的 <strong>Application (应用程序)</strong> 标签。</li>
-                    <li>在左侧展开 <strong>Cookies</strong> ➡️ 点击 <strong>https://pan.baidu.com</strong>。</li>
-                    <li>找到名为 <strong>BDUSS</strong> 的行，双击复制其 <strong>Value</strong> (或整段 Cookie) 粘贴到下方即可。</li>
+                    <li>按 <strong>F12</strong> 打开开发者工具，切换到 <strong>Network (网络)</strong> 标签。</li>
+                    <li>按 <strong>F5</strong> 刷新网页，在网络请求列表中点击任意请求（例如 <code class="text-sky-300">list</code> 或 <code class="text-sky-300">main</code>）。</li>
+                    <li>在右侧 <strong>Headers (标头)</strong> ➡️ <strong>Request Headers (请求标头)</strong> 中找到 <strong>Cookie</strong>，复制整段值粘贴到下方即可（或复制 Application 中的 BDUSS）。</li>
                 </ol>
             </div>
 
             <form @submit.prevent="submitCookieAuth()" class="space-y-4 pt-1">
                 <div>
-                    <label class="block text-xs font-medium text-slate-300 mb-1">粘贴 BDUSS 或完整 Cookie</label>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">粘贴完整 Cookie 字符串 或 BDUSS</label>
                     <textarea x-model="cookieInput" required rows="3"
-                              placeholder="粘贴 BDUSS Value 或完整 Cookie 字符串"
+                              placeholder="粘贴从 Request Headers 复制的完整 Cookie 字符串 (推荐)，或单个 BDUSS"
                               class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-sky-500 font-mono"></textarea>
                 </div>
 

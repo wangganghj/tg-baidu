@@ -9,7 +9,9 @@ import json
 import logging
 import posixpath
 import re
+import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
@@ -159,11 +161,21 @@ class BaiduClient:
             "Origin": "https://pan.baidu.com",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "X-Requested-With": "XMLHttpRequest",
         }
-        if self.cookie:
-            headers["Cookie"] = self.cookie
-        elif self.bduss:
-            headers["Cookie"] = f"BDUSS={self.bduss}; BDUSS_BFESS={self.bduss}"
+        cookie_header = self.cookie
+        if not cookie_header and self.bduss:
+            cookie_header = f"BDUSS={self.bduss}; BDUSS_BFESS={self.bduss}"
+            if self.stoken:
+                cookie_header += f"; STOKEN={self.stoken}"
+
+        if cookie_header:
+            if "PANWEB" not in cookie_header:
+                cookie_header += "; PANWEB=1"
+            if "BAIDUID" not in cookie_header:
+                fake_baiduid = uuid.uuid4().hex.upper() + ":FG=1"
+                cookie_header += f"; BAIDUID={fake_baiduid}"
+            headers["Cookie"] = cookie_header
         return headers
 
     async def get_user_info(self) -> NetdiskUserInfo:
@@ -199,26 +211,25 @@ class BaiduClient:
                 resp = await client.get("https://pan.baidu.com/api/gettemplateuser?web=1")
                 if resp.status_code == 200:
                     data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        records = data.get("records", [])
-                        if records:
-                            rec = records[0]
-                            return NetdiskUserInfo(
-                                baidu_name=rec.get("uname", "百度网盘用户"),
-                                netdisk_name=rec.get("uname", "百度网盘用户"),
-                                uk=rec.get("uk", 0),
-                                vip_type=rec.get("vip_type", 0),
-                                avatar_url=rec.get("avatar_url", ""),
-                            )
-                        if "userinfo" in data:
-                            u = data["userinfo"]
-                            return NetdiskUserInfo(
-                                baidu_name=u.get("uname", "百度网盘用户"),
-                                netdisk_name=u.get("uname", "百度网盘用户"),
-                                uk=u.get("uk", 0),
-                                vip_type=u.get("vip_type", 0),
-                                avatar_url=u.get("avatar_url", ""),
-                            )
+                    records = data.get("records", [])
+                    if records and isinstance(records, list):
+                        rec = records[0]
+                        return NetdiskUserInfo(
+                            baidu_name=rec.get("uname", "百度网盘用户"),
+                            netdisk_name=rec.get("uname", "百度网盘用户"),
+                            uk=rec.get("uk", 0),
+                            vip_type=rec.get("vip_type", 0),
+                            avatar_url=rec.get("avatar_url", ""),
+                        )
+                    if "userinfo" in data:
+                        u = data["userinfo"]
+                        return NetdiskUserInfo(
+                            baidu_name=u.get("uname", "百度网盘用户"),
+                            netdisk_name=u.get("uname", "百度网盘用户"),
+                            uk=u.get("uk", 0),
+                            vip_type=u.get("vip_type", 0),
+                            avatar_url=u.get("avatar_url", ""),
+                        )
             except Exception as e:
                 logger.debug("gettemplateuser failed: %s", e)
 
@@ -288,9 +299,10 @@ class BaiduClient:
         """List files and folders in directory with multi-strategy fallback."""
         headers = self._get_headers()
         clean_dir = "/" + dir_path.strip("/") if dir_path != "/" else "/"
+        last_error = ""
 
         async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
-            # Strategy 1: Standard Web api/list with app_id 250528
+            # Strategy 1: Standard Web api/list with app_id 250528 and chunlei channel
             try:
                 params: Dict[str, Any] = {
                     "dir": clean_dir,
@@ -303,33 +315,22 @@ class BaiduClient:
                     "web": "1",
                     "clienttype": 0,
                     "app_id": 250528,
+                    "channel": "chunlei",
+                    "dp-logid": str(int(time.time() * 1000)),
                 }
                 resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
                 if resp.status_code == 200:
                     data = resp.json()
-                    if data.get("errno", 0) == 0:
+                    errno = data.get("errno", 0)
+                    if errno == 0:
                         return self._parse_file_list(data.get("list", []))
+                    else:
+                        last_error = f"api/list errno={errno}"
+                        logger.info("list_dir Strategy 1 errno=%s: %s", errno, resp.text[:200])
             except Exception as e:
                 logger.debug("api/list strategy 1 failed: %s", e)
 
-            # Strategy 2: Web api/list simple params
-            try:
-                params = {
-                    "dir": clean_dir,
-                    "order": order,
-                    "desc": desc,
-                    "start": start,
-                    "num": limit,
-                }
-                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("errno", 0) == 0:
-                        return self._parse_file_list(data.get("list", []))
-            except Exception as e:
-                logger.debug("api/list strategy 2 failed: %s", e)
-
-            # Strategy 3: PC Client XPAN list endpoint with Netdisk UA
+            # Strategy 2: PC Client XPAN list endpoint with Netdisk UA
             try:
                 pc_headers = self._get_headers(custom_ua=NETDISK_PC_UA)
                 xpan_params: Dict[str, Any] = {
@@ -345,10 +346,36 @@ class BaiduClient:
                 xpan_resp = await client.get(f"{XPAN_BASE_URL}/file", params=xpan_params, headers=pc_headers)
                 if xpan_resp.status_code == 200:
                     xpan_data = xpan_resp.json()
-                    if xpan_data.get("errno", 0) == 0:
+                    errno = xpan_data.get("errno", 0)
+                    if errno == 0:
                         return self._parse_file_list(xpan_data.get("list", []))
+                    else:
+                        last_error = f"xpan/file errno={errno}"
+                        logger.info("list_dir Strategy 2 errno=%s: %s", errno, xpan_resp.text[:200])
             except Exception as e:
-                logger.debug("xpan file/list strategy 3 failed: %s", e)
+                logger.debug("xpan file/list strategy 2 failed: %s", e)
+
+            # Strategy 3: Web api/list simple params without app_id
+            try:
+                params = {
+                    "dir": clean_dir,
+                    "order": order,
+                    "desc": desc,
+                    "start": start,
+                    "num": limit,
+                    "web": "1",
+                }
+                resp = await client.get(f"{PAN_BASE_URL}/api/list", params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    errno = data.get("errno", 0)
+                    if errno == 0:
+                        return self._parse_file_list(data.get("list", []))
+                    else:
+                        last_error = f"api/list simple errno={errno}"
+                        logger.info("list_dir Strategy 3 errno=%s: %s", errno, resp.text[:200])
+            except Exception as e:
+                logger.debug("api/list strategy 3 failed: %s", e)
 
             # Strategy 4: categorylist (if browsing root)
             if clean_dir == "/":
@@ -361,7 +388,8 @@ class BaiduClient:
                 except Exception as e:
                     logger.debug("categorylist strategy 4 failed: %s", e)
 
-            logger.warning("All directory listing strategies exhausted for '%s'", clean_dir)
+            if last_error:
+                logger.warning("Baidu list_dir failed for '%s': %s", clean_dir, last_error)
             return []
 
     def _parse_file_list(self, raw_list: List[Dict[str, Any]]) -> List[NetdiskFile]:
