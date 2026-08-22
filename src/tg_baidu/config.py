@@ -85,19 +85,22 @@ class Config(BaseModel):
         search_paths.extend([
             Path("config.yaml"),
             Path("config.yml"),
+            Path("data/config.yaml"),
+            Path("data/config.yml"),
             Path("/app/config.yaml"),
+            Path("/app/data/config.yaml"),
         ])
 
         for path in search_paths:
-            if path.is_file():
-                try:
+            try:
+                if path.is_file():
                     with open(path, "r", encoding="utf-8") as f:
                         yaml_data = yaml.safe_load(f)
                         if isinstance(yaml_data, dict):
                             data = yaml_data
                             break
-                except Exception as e:
-                    print(f"Warning: Failed to load config from {path}: {e}")
+            except Exception as e:
+                print(f"Warning: Failed to load config from {path}: {e}")
 
         # Override with environment variables
         env_mappings = {

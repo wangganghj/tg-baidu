@@ -68,10 +68,13 @@ def create_web_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        return templates.TemplateResponse("index.html", {"request": request})
+        index_file = TEMPLATES_DIR / "index.html"
+        if index_file.is_file():
+            return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
+        return templates.TemplateResponse(request=request, name="index.html")
 
     @app.get("/health")
     async def health_check():
-        return {"status": "ok", "app": "tg-baidu"}
+        return {"status": "ok", "app": "tg-baidu", "version": "0.1.0"}
 
     return app

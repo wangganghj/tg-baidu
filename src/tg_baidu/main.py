@@ -134,8 +134,8 @@ async def run_services(config: Config) -> None:
             app=web_app,
             host=config.web.host,
             port=config.web.port,
-            log_level="warning",
-            access_log=False,
+            log_level="info",
+            access_log=True,
         )
         server = uvicorn.Server(server_cfg)
         logger.info(
@@ -143,7 +143,7 @@ async def run_services(config: Config) -> None:
             "localhost" if config.web.host == "0.0.0.0" else config.web.host,
             config.web.port,
         )
-        tasks.append(asyncio.create_task(server.serve()))
+        tasks.append(server.serve())
 
     # 9. Telegram Bot Task
     if tg_app:
@@ -156,13 +156,17 @@ async def run_services(config: Config) -> None:
                 while True:
                     await asyncio.sleep(1)
 
-        tasks.append(asyncio.create_task(run_bot()))
+        tasks.append(run_bot())
     else:
         logger.info("ℹ️ Telegram Bot Token is not configured yet. You can configure it via the Web Dashboard.")
 
+    if not tasks:
+        logger.error("No services are enabled. Please check configuration.")
+        return
+
     try:
         await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
         logger.info("Shutting down tg-baidu services...")

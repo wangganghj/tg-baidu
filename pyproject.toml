@@ -40,6 +40,9 @@ tg-baidu = "tg_baidu.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"*" = ["*.html", "templates/*", "templates/**/*", "static/*", "static/**/*"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --asyncio-mode=auto"
