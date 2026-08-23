@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - tg-baidu 百度网盘智能转存</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4 selection:bg-sky-500 selection:text-white"
+      x-data="loginApp()" x-init="initApp()">
+
+    <!-- Background decoration -->
+    <div class="fixed inset-0 overflow-hidden pointer-events-none -z-10">
+        <div class="absolute -top-40 -left-40 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl"></div>
+        <div class="absolute -bottom-40 -right-40 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl"></div>
+    </div>
+
+    <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 backdrop-blur-xl rounded-3xl p-8 shadow-2xl space-y-6">
+        
+        <!-- Logo & Title -->
+        <div class="text-center space-y-2">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-sky-600 to-blue-500 text-3xl shadow-lg shadow-sky-500/20 mb-2">
+                🎬
+            </div>
+            <h1 class="text-2xl font-bold tracking-tight text-white">tg-baidu</h1>
+            <p class="text-xs text-slate-400">百度网盘智能转存与 Plex / Emby 重命名控制台</p>
+        </div>
+
+        <!-- IP Status Badge -->
+        <div class="bg-slate-950/80 rounded-xl p-3 border border-slate-800 text-xs flex items-center justify-between">
+            <div class="flex items-center space-x-2 text-slate-400">
+                <span>🌐 访问 IP:</span>
+                <span class="font-mono text-slate-200" x-text="authStatus.client_ip || '检测中...'"></span>
+            </div>
+            <template x-if="authStatus.is_whitelisted">
+                <span class="bg-emerald-500/20 text-emerald-400 text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-500/30">
+                    🟢 白名单免密
+                </span>
+            </template>
+            <template x-if="!authStatus.is_whitelisted && authStatus.has_password">
+                <span class="bg-amber-500/20 text-amber-400 text-[11px] font-medium px-2 py-0.5 rounded-full border border-amber-500/30">
+                    🔒 密码保护中
+                </span>
+            </template>
+        </div>
+
+        <!-- Whitelisted Notice -->
+        <template x-if="authStatus.is_whitelisted">
+            <div class="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-4 text-xs text-emerald-300 space-y-2">
+                <p>✨ 您的当前 IP 已在免密白名单中，可直接进入控制台。</p>
+                <a href="/" class="block text-center bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2 rounded-lg transition-colors shadow-lg shadow-emerald-600/20">
+                    🚀 直接进入控制台
+                </a>
+            </div>
+        </template>
+
+        <!-- Login Form -->
+        <form x-show="!authStatus.is_whitelisted" @submit.prevent="submitLogin()" class="space-y-4 pt-1">
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1.5">访问密码 (Web Access Password)</label>
+                <div class="relative">
+                    <input :type="showPassword ? 'text' : 'password'"
+                           x-model="password"
+                           required
+                           autofocus
+                           placeholder="请输入访问控制密码"
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition-all pr-10 font-mono">
+                    <button type="button" @click="showPassword = !showPassword"
+                            class="absolute right-3 top-3 text-slate-400 hover:text-slate-200 text-sm">
+                        <span x-text="showPassword ? '🙈' : '👁️'"></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Error Message -->
+            <div x-show="errorMessage" x-cloak class="bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs p-3 rounded-xl">
+                <span x-text="errorMessage"></span>
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit" :disabled="loggingIn || !password"
+                    class="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium py-3 rounded-xl text-sm transition-all shadow-lg shadow-sky-600/30 flex items-center justify-center space-x-2">
+                <span x-show="loggingIn" class="animate-spin">🔄</span>
+                <span x-text="loggingIn ? '正在验证...' : '🔐 登录控制台'"></span>
+            </button>
+        </form>
+
+        <div class="text-center text-[11px] text-slate-400 pt-2 border-t border-slate-800/80">
+            <span>💡 可在系统设置中添加当前 IP 至白名单以实现局域网免密访问</span>
+        </div>
+
+    </div>
+
+    <script>
+        function loginApp() {
+            return {
+                password: '',
+                showPassword: false,
+                loggingIn: false,
+                errorMessage: '',
+                authStatus: { has_password: true, is_whitelisted: false, client_ip: '' },
+
+                async initApp() {
+                    try {
+                        const res = await fetch('/api/auth/web-status');
+                        if (res.ok) {
+                            this.authStatus = await res.json();
+                            if (this.authStatus.is_authenticated || this.authStatus.is_whitelisted || !this.authStatus.has_password) {
+                                window.location.href = '/';
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch auth status', e);
+                    }
+                },
+
+                async submitLogin() {
+                    if (!this.password) return;
+                    this.loggingIn = true;
+                    this.errorMessage = '';
+                    try {
+                        const res = await fetch('/api/auth/web-login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ password: this.password })
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            window.location.href = '/';
+                        } else {
+                            this.errorMessage = data.detail || '密码错误，请重新输入';
+                        }
+                    } catch (e) {
+                        this.errorMessage = '登录请求失败: ' + e;
+                    } finally {
+                        this.loggingIn = false;
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

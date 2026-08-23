@@ -80,10 +80,20 @@
                     </button>
                 </nav>
 
-                <!-- Status Badge -->
-                <div class="flex items-center space-x-2">
-                    <div class="w-2.5 h-2.5 rounded-full" :class="auth.is_authenticated ? 'bg-emerald-400 shadow-lg shadow-emerald-500/50' : 'bg-amber-400 shadow-lg shadow-amber-500/50'"></div>
-                    <span class="text-xs font-medium text-slate-300 hidden md:inline" x-text="auth.is_authenticated ? '百度网盘已连接' : '百度网盘未连接'"></span>
+                <!-- Status Badge & Web Auth Actions -->
+                <div class="flex items-center space-x-3">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-2.5 h-2.5 rounded-full" :class="auth.is_authenticated ? 'bg-emerald-400 shadow-lg shadow-emerald-500/50' : 'bg-amber-400 shadow-lg shadow-amber-500/50'"></div>
+                        <span class="text-xs font-medium text-slate-300 hidden md:inline" x-text="auth.is_authenticated ? '百度网盘已连接' : '百度网盘未连接'"></span>
+                    </div>
+
+                    <template x-if="webAuth.has_password">
+                        <button @click="webLogout()" title="退出 Web 登录"
+                                class="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-700 transition-colors flex items-center space-x-1">
+                            <span>🚪</span>
+                            <span class="hidden sm:inline">退出登录</span>
+                        </button>
+                    </template>
                 </div>
             </div>
         </div>
@@ -561,6 +571,46 @@
                     </div>
                 </div>
 
+                <!-- Web Security & IP Whitelist Card -->
+                <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-700/60 pb-3 gap-2">
+                        <h3 class="text-lg font-semibold text-white flex items-center space-x-2">
+                            <span>🔒</span>
+                            <span>Web 控制台访问密码与免密 IP 白名单</span>
+                        </h3>
+                        <div class="text-xs font-normal text-slate-400 flex items-center space-x-1.5 bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/50">
+                            <span>🌐 当前访问 IP:</span>
+                            <span class="font-mono text-sky-400 font-medium" x-text="webAuth.client_ip || '检测中...'"></span>
+                            <template x-if="webAuth.is_whitelisted">
+                                <span class="bg-emerald-500/20 text-emerald-400 text-[10px] px-1.5 py-0.2 rounded border border-emerald-500/30">已免密</span>
+                            </template>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Web 访问控制密码 (留空表示无密码直接访问)</label>
+                            <input type="password" x-model="settings.web.raw_auth_password" placeholder="留空关闭密码保护；设置后访问 Web 需要输入密码"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-sky-500 font-mono">
+                            <span class="text-xs text-slate-500 mt-1 block">设置密码后，访问控制台需登录。环境变量 <code>WEB_AUTH_PASSWORD</code> 亦可配置。</span>
+                        </div>
+
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="block text-xs font-medium text-slate-300">免密 IP / CIDR 白名单 (针对设置的 IP 访问不需要密码)</label>
+                                <button type="button" @click="addCurrentIpToWhitelist()"
+                                        class="text-xs text-sky-400 hover:text-sky-300 font-medium flex items-center space-x-1">
+                                    <span>➕</span>
+                                    <span>添加当前 IP 到白名单</span>
+                                </button>
+                            </div>
+                            <textarea x-model="webIpWhitelistText" rows="3"
+                                      placeholder="支持单个 IP (如: 192.168.1.100, 127.0.0.1) 或 CIDR 网段 (如: 192.168.1.0/24, 10.0.0.0/8)，一行一个或逗号分隔"
+                                      class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-sky-500 font-mono"></textarea>
+                            <span class="text-xs text-slate-500 mt-1 block">白名单中的设备访问 Web 控制台将自动跳过密码验证，直接免密进入！</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Save Button -->
                 <div class="flex justify-end">
                     <button type="submit" :disabled="savingSettings"
@@ -827,11 +877,14 @@
                 taskStats: { total: 0, completed: 0, processing: 0, failed: 0 },
                 tasksList: [],
                 auth: { is_authenticated: false, is_configured: false, cookie_hint: '', user_info: null, quota: null },
+                webAuth: { has_password: false, is_whitelisted: false, is_authenticated: true, client_ip: '', ip_whitelist: [] },
+                webIpWhitelistText: '',
                 settings: {
                     telegram: { raw_bot_token: '', admin_user_id: 0 },
                     tmdb: { raw_api_key: '', language: 'zh-CN', include_adult: false },
                     baidu: { raw_cookie: '' },
                     media: { movie_dir: '/Media/Movies', tv_dir: '/Media/TV', movie_format: '', tv_format: '', auto_transfer: false, cleanup_temp_dirs: true },
+                    web: { raw_auth_password: '', ip_whitelist: [] },
                 },
 
                 get currentPathParts() {
@@ -839,6 +892,7 @@
                 },
 
                 async initApp() {
+                    await this.fetchWebAuthStatus();
                     await this.fetchAuthStatus();
                     await this.fetchSettings();
                     await this.fetchTaskStats();
@@ -1005,9 +1059,42 @@
                         this.settings = await res.json();
                         if (this.settings.media.movie_dir) this.customMovieDir = this.settings.media.movie_dir;
                         if (this.settings.media.tv_dir) this.customTvDir = this.settings.media.tv_dir;
+                        if (this.settings.web && this.settings.web.ip_whitelist) {
+                            this.webIpWhitelistText = this.settings.web.ip_whitelist.join('\n');
+                        }
+                        await this.fetchWebAuthStatus();
                     } catch (e) {
                         console.error('Failed to load settings', e);
                     }
+                },
+
+                async fetchWebAuthStatus() {
+                    try {
+                        const res = await fetch('/api/auth/web-status');
+                        if (res.ok) {
+                            this.webAuth = await res.json();
+                        }
+                    } catch (e) {}
+                },
+
+                addCurrentIpToWhitelist() {
+                    if (!this.webAuth.client_ip) return;
+                    const currentList = this.webIpWhitelistText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+                    if (!currentList.includes(this.webAuth.client_ip)) {
+                        currentList.push(this.webAuth.client_ip);
+                        this.webIpWhitelistText = currentList.join('\n');
+                        this.showToast('✅ 已将当前 IP (' + this.webAuth.client_ip + ') 加入白名单输入框，请点击右下方保存设置生效！');
+                    } else {
+                        this.showToast('ℹ️ 当前 IP 已在白名单列表中');
+                    }
+                },
+
+                async webLogout() {
+                    if (!confirm('确定退出当前 Web 控制台登录吗？')) return;
+                    try {
+                        await fetch('/api/auth/web-logout', { method: 'POST' });
+                    } catch (e) {}
+                    window.location.href = '/login';
                 },
 
                 async saveAllSettings() {
@@ -1024,7 +1111,9 @@
                             media_movie_format: this.settings.media.movie_format,
                             media_tv_format: this.settings.media.tv_format,
                             media_auto_transfer: this.settings.media.auto_transfer,
-                            media_cleanup_temp_dirs: this.settings.media.cleanup_temp_dirs
+                            media_cleanup_temp_dirs: this.settings.media.cleanup_temp_dirs,
+                            web_auth_password: (this.settings.web && this.settings.web.raw_auth_password !== undefined) ? this.settings.web.raw_auth_password : '',
+                            web_ip_whitelist: this.webIpWhitelistText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean),
                         };
                         const res = await fetch('/api/settings', {
                             method: 'POST',

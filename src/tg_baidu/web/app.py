@@ -1,5 +1,5 @@
 """
-FastAPI application factory for the Web Dashboard.
+FastAPI application factory for the Web Dashboard with password protection & IP whitelist.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..baidu.auth import BaiduAuthManager
@@ -18,12 +18,24 @@ from ..config import Config
 from ..core.database import Database
 from ..core.task_manager import TransferTaskManager
 from ..tmdb.client import TMDBClient
+from .auth_helper import is_request_authenticated
 from .routes import auth_routes, netdisk_routes, settings_routes, tasks_routes
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Public paths that never require password authentication
+PUBLIC_PATHS = {
+    "/login",
+    "/api/auth/web-login",
+    "/api/auth/web-status",
+    "/health",
+    "/docs",
+    "/openapi.json",
+    "/favicon.ico",
+}
 
 
 def create_web_app(
@@ -60,14 +72,49 @@ def create_web_app(
         allow_headers=["*"],
     )
 
+    # Authentication & IP Whitelist Middleware
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        path = request.url.path
+        # Allow public endpoints
+        if path in PUBLIC_PATHS or path.startswith("/static"):
+            return await call_next(request)
+
+        # Check authentication status
+        is_authed, reason = is_request_authenticated(request)
+        if not is_authed:
+            # If user is accessing web page from browser, redirect to login
+            accept = request.headers.get("Accept", "")
+            if path == "/" or "text/html" in accept:
+                return RedirectResponse(url="/login", status_code=302)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未授权访问，需要登录", "need_login": True},
+            )
+
+        return await call_next(request)
+
     # Register Routers
     app.include_router(auth_routes.router)
     app.include_router(netdisk_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(tasks_routes.router)
 
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        is_authed, _ = is_request_authenticated(request)
+        if is_authed:
+            return RedirectResponse(url="/", status_code=302)
+        login_file = TEMPLATES_DIR / "login.html"
+        if login_file.is_file():
+            return HTMLResponse(content=login_file.read_text(encoding="utf-8"))
+        return templates.TemplateResponse(request=request, name="login.html")
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
+        is_authed, _ = is_request_authenticated(request)
+        if not is_authed:
+            return RedirectResponse(url="/login", status_code=302)
         index_file = TEMPLATES_DIR / "index.html"
         if index_file.is_file():
             return HTMLResponse(content=index_file.read_text(encoding="utf-8"))

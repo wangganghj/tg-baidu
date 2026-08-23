@@ -32,6 +32,9 @@ class SettingsUpdateRequest(BaseModel):
     media_tv_format: Optional[str] = None
     media_auto_transfer: Optional[bool] = None
     media_cleanup_temp_dirs: Optional[bool] = None
+    # Web Auth & IP Whitelist
+    web_auth_password: Optional[str] = None
+    web_ip_whitelist: Optional[List[str]] = None
 
 
 class TMDBTestSearchRequest(BaseModel):
@@ -77,6 +80,8 @@ async def get_settings(request: Request) -> Dict[str, Any]:
             "host": config.web.host,
             "port": config.web.port,
             "has_auth": bool(config.web.auth_password),
+            "raw_auth_password": config.web.auth_password,
+            "ip_whitelist": config.web.ip_whitelist,
         },
     }
 
@@ -131,6 +136,12 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> D
     if payload.media_cleanup_temp_dirs is not None:
         config.media.cleanup_temp_dirs = payload.media_cleanup_temp_dirs
 
+    # Web Auth & IP Whitelist
+    if payload.web_auth_password is not None:
+        config.web.auth_password = payload.web_auth_password.strip()
+    if payload.web_ip_whitelist is not None:
+        config.web.ip_whitelist = [ip.strip() for ip in payload.web_ip_whitelist if ip.strip()]
+
     # Persist all settings to SQLite system_settings table
     persisted_dict = {
         "telegram_bot_token": config.telegram.bot_token,
@@ -148,6 +159,8 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> D
         "media_tv_format": config.media.tv_format,
         "media_auto_transfer": config.media.auto_transfer,
         "media_cleanup_temp_dirs": config.media.cleanup_temp_dirs,
+        "web_auth_password": config.web.auth_password,
+        "web_ip_whitelist": config.web.ip_whitelist,
     }
     await db.save_system_settings(persisted_dict)
 

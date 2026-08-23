@@ -151,5 +151,26 @@ class TestCoreLogic(unittest.TestCase):
         self.assertEqual(p3.pwd, "6666")
 
 
+class TestWebAuth(unittest.TestCase):
+
+    def test_ip_whitelist(self):
+        from tg_baidu.web.auth_helper import is_ip_whitelisted
+        whitelist = ["127.0.0.1", "192.168.1.0/24", "10.0.0.0/8"]
+        self.assertTrue(is_ip_whitelisted("127.0.0.1", whitelist))
+        self.assertTrue(is_ip_whitelisted("192.168.1.55", whitelist))
+        self.assertTrue(is_ip_whitelisted("10.8.0.1", whitelist))
+        self.assertFalse(is_ip_whitelisted("192.168.2.1", whitelist))
+        self.assertFalse(is_ip_whitelisted("8.8.8.8", whitelist))
+
+    def test_session_token(self):
+        from tg_baidu.web.auth_helper import generate_session_token, verify_session_token
+        pwd = "AdminPassword999"
+        secret = "test_salt"
+        token = generate_session_token(pwd, secret, expiry_days=7)
+        self.assertTrue(verify_session_token(token, pwd, secret))
+        self.assertFalse(verify_session_token(token, "WrongPwd", secret))
+        self.assertFalse(verify_session_token("malformed", pwd, secret))
+
+
 if __name__ == "__main__":
     unittest.main()

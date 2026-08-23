@@ -149,3 +149,76 @@ async def logout(request: Request) -> Dict[str, bool]:
     baidu_client.set_cookie("")
     config.save_yaml("data/config.yaml")
     return {"success": True}
+
+
+class WebLoginRequest(BaseModel):
+    password: str
+
+
+@router.get("/api/auth/web-status")
+async def get_web_auth_status(request: Request) -> Dict[str, Any]:
+    """Get current client's Web authentication and IP whitelist status."""
+    from ..auth_helper import (
+        get_client_ip,
+        is_ip_whitelisted,
+        is_request_authenticated,
+    )
+    config = request.app.state.config
+    client_ip = get_client_ip(request)
+    has_password = bool(config.web.auth_password and config.web.auth_password.strip())
+    is_whitelisted = is_ip_whitelisted(client_ip, config.web.ip_whitelist)
+    is_authed, reason = is_request_authenticated(request)
+
+    return {
+        "has_password": has_password,
+        "is_whitelisted": is_whitelisted,
+        "is_authenticated": is_authed,
+        "auth_reason": reason,
+        "client_ip": client_ip,
+        "ip_whitelist": config.web.ip_whitelist,
+    }
+
+
+@router.post("/api/auth/web-login")
+async def web_login(payload: WebLoginRequest, request: Request) -> Dict[str, Any]:
+    """Verify web password and set session cookie."""
+    from fastapi.responses import JSONResponse
+    from ..auth_helper import (
+        SESSION_COOKIE_NAME,
+        generate_session_token,
+    )
+
+    config = request.app.state.config
+    auth_password = (config.web.auth_password or "").strip()
+
+    if not auth_password:
+        return {"success": True, "message": "未启用密码保护"}
+
+    if payload.password != auth_password:
+        raise HTTPException(status_code=401, detail="访问密码错误，请重试。")
+
+    token = generate_session_token(auth_password, config.web.session_secret, expiry_days=30)
+    response = JSONResponse({
+        "success": True,
+        "message": "登录成功",
+        "token": token,
+    })
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=30 * 86400,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@router.post("/api/auth/web-logout")
+async def web_logout() -> Dict[str, Any]:
+    """Clear session cookie and log out of web dashboard."""
+    from fastapi.responses import JSONResponse
+    from ..auth_helper import SESSION_COOKIE_NAME
+
+    response = JSONResponse({"success": True, "message": "已退出登录"})
+    response.delete_cookie(key=SESSION_COOKIE_NAME)
+    return response

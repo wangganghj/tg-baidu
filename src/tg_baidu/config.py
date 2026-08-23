@@ -61,6 +61,8 @@ class WebConfig(BaseModel):
     host: str = Field(default="0.0.0.0", description="Web server bind host")
     port: int = Field(default=8082, description="Web server bind port")
     auth_password: str = Field(default="", description="Optional password protection for web UI")
+    ip_whitelist: List[str] = Field(default_factory=list, description="IPs/CIDRs that bypass password login")
+    session_secret: str = Field(default="", description="Secret key for signing web session tokens")
 
 
 class Config(BaseModel):
@@ -127,6 +129,9 @@ class Config(BaseModel):
             "WEB_HOST": ("web", "host"),
             "WEB_PORT": ("web", "port"),
             "WEB_AUTH_PASSWORD": ("web", "auth_password"),
+            "TG_BAIDU_WEB_PASSWORD": ("web", "auth_password"),
+            "WEB_IP_WHITELIST": ("web", "ip_whitelist"),
+            "TG_BAIDU_WEB_IP_WHITELIST": ("web", "ip_whitelist"),
         }
 
         for env_var, (section, key) in env_mappings.items():
@@ -139,6 +144,10 @@ class Config(BaseModel):
                         int(uid.strip())
                         for uid in val.split(",")
                         if uid.strip().isdigit()
+                    ]
+                elif key == "ip_whitelist":
+                    data[section][key] = [
+                        ip.strip() for ip in val.split(",") if ip.strip()
                     ]
                 elif key == "admin_user_id":
                     data[section][key] = int(val) if val.isdigit() else 0

@@ -87,6 +87,18 @@ async def run_services(config: Config) -> None:
                 config.media.auto_transfer = persisted_settings["media_auto_transfer"] in ("True", "true", "1", 1, True)
             if "media_cleanup_temp_dirs" in persisted_settings:
                 config.media.cleanup_temp_dirs = persisted_settings["media_cleanup_temp_dirs"] in ("True", "true", "1", 1, True)
+            if "web_auth_password" in persisted_settings and persisted_settings["web_auth_password"] is not None:
+                config.web.auth_password = str(persisted_settings["web_auth_password"]).strip()
+            if "web_ip_whitelist" in persisted_settings and persisted_settings["web_ip_whitelist"]:
+                raw_wl = persisted_settings["web_ip_whitelist"]
+                if isinstance(raw_wl, list):
+                    config.web.ip_whitelist = raw_wl
+                elif isinstance(raw_wl, str):
+                    try:
+                        import json
+                        config.web.ip_whitelist = json.loads(raw_wl)
+                    except Exception:
+                        config.web.ip_whitelist = [ip.strip() for ip in raw_wl.split(",") if ip.strip()]
             logger.info("Loaded %d persisted settings from database.", len(persisted_settings))
     except Exception as e:
         logger.warning("Failed to load persisted system settings: %s", e)
