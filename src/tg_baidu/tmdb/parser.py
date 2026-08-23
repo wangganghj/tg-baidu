@@ -135,11 +135,12 @@ class MediaParser:
     def _parse_chinese_season(cls, text: str) -> Optional[int]:
         m = CN_SEASON_PATTERN.search(text)
         if m:
-            val = m.group(1)
-            if val.isdigit():
-                return int(val)
-            if val in CN_NUM_MAP:
-                return CN_NUM_MAP[val]
+            for val in m.groups():
+                if val:
+                    if val.isdigit():
+                        return int(val)
+                    if val in CN_NUM_MAP:
+                        return CN_NUM_MAP[val]
         return None
 
     @classmethod

@@ -524,11 +524,36 @@ class BaiduClient:
             clean_dest = "/" + dest_dir.strip("/")
             try:
                 self._sync_create_dir(clean_dest)
+                dest_file_path = posixpath.join(clean_dest, posixpath.basename(path))
+                final_path = posixpath.join(clean_dest, new_name) if new_name else dest_file_path
+
+                if path == final_path:
+                    return {"errno": 0}
+
+                # If final target file exists, remove it first to allow clean overwrite
+                try:
+                    self._pcs_api.remove(final_path)
+                except Exception:
+                    pass
+
+                # Move file into destination directory
                 self._pcs_api.move(path, clean_dest)
-                if new_name:
-                    dest_file_path = posixpath.join(clean_dest, posixpath.basename(path))
-                    final_path = posixpath.join(clean_dest, new_name)
-                    self._pcs_api.rename(dest_file_path, final_path)
+
+                # Rename if target filename is different
+                if new_name and dest_file_path != final_path:
+                    try:
+                        self._pcs_api.rename(dest_file_path, final_path)
+                    except Exception as e_ren:
+                        err_str = str(e_ren)
+                        if "31061" in err_str or "already exists" in err_str or "文件已经存在" in err_str:
+                            try:
+                                self._pcs_api.remove(final_path)
+                                self._pcs_api.rename(dest_file_path, final_path)
+                            except Exception:
+                                pass
+                        else:
+                            raise e_ren
+
                 return {"errno": 0}
             except Exception as e:
                 logger.error("BaiduPCSApi move failed for '%s' to '%s': %s", path, clean_dest, e)

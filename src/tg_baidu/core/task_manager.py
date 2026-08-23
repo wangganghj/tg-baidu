@@ -199,34 +199,95 @@ class TransferTaskManager:
             total_files=total_files,
         )
 
-        # 4. Refine TMDB match if original was unindexed/placeholder
-        if tmdb.id == 0 and getattr(self.tmdb_client, "api_key", None):
-            first_vf = video_files[0]
-            first_parsed = MediaParser.parse_filename(first_vf.server_filename)
-            if first_parsed.cleaned_title:
+        # 4. Refine TMDB match from actual transferred folder/file names in temp_dir
+        clean_temp = "/" + temp_dir.strip("/")
+        candidate_title_candidates = []
+        is_tv_detected = False
+
+        for item in all_transferred_files:
+            rel = item.path[len(clean_temp):].strip("/")
+            parts = [p for p in rel.split("/") if p]
+            if item.isdir:
+                if len(parts) >= 1:
+                    top_part = parts[0]
+                    if top_part.lower() not in ("s01", "s02", "season 1", "season 01", "season 02", "specials", "temp"):
+                        if top_part not in candidate_title_candidates:
+                            candidate_title_candidates.append(top_part)
+            else:
+                vf_parsed = MediaParser.parse_filename(posixpath.basename(item.path))
+                if vf_parsed.media_type == "tv" or vf_parsed.episode is not None:
+                    is_tv_detected = True
+                if len(parts) > 1 and parts[0] not in candidate_title_candidates:
+                    top_part = parts[0]
+                    if top_part.lower() not in ("s01", "s02", "season 1", "season 01", "season 02", "specials", "temp"):
+                        candidate_title_candidates.append(top_part)
+
+        if len(video_files) > 1:
+            is_tv_detected = True
+
+        raw_title_to_search = ""
+        if candidate_title_candidates:
+            raw_title_to_search = candidate_title_candidates[0]
+        elif video_files:
+            raw_title_to_search = video_files[0].server_filename
+
+        if raw_title_to_search:
+            clean_search_parsed = MediaParser.parse_filename(raw_title_to_search)
+            detected_query = clean_search_parsed.cleaned_title or raw_title_to_search
+            detected_year = clean_search_parsed.year
+            media_type = "tv" if is_tv_detected else clean_search_parsed.media_type
+
+            # Search TMDB with the real title extracted from disk
+            if getattr(self.tmdb_client, "api_key", None):
                 try:
                     candidates = await self.tmdb_client.search_multi(
-                        query=first_parsed.cleaned_title,
-                        media_type=media_type if media_type in ("movie", "tv") else "auto",
-                        year=first_parsed.year,
+                        query=detected_query,
+                        media_type=media_type,
+                        year=detected_year,
                     )
+                    if not candidates:
+                        candidates = await self.tmdb_client.search_multi(query=detected_query)
                     if candidates:
                         tmdb = candidates[0]
                         media_type = tmdb.media_type
-                        if media_type == "tv":
-                            dest_root = (
-                                data.get("target_root_dir")
-                                or user_settings.get("tv_dir")
-                                or self.config.media.tv_dir
-                            )
-                        else:
-                            dest_root = (
-                                data.get("target_root_dir")
-                                or user_settings.get("movie_dir")
-                                or self.config.media.movie_dir
-                            )
+                    else:
+                        tmdb = TMDBMediaResult(
+                            id=0,
+                            title=detected_query,
+                            original_title=detected_query,
+                            year=detected_year,
+                            media_type=media_type,
+                            overview="",
+                            poster_url="",
+                        )
                 except Exception as e:
-                    logger.debug("Refined TMDB search notice: %s", e)
+                    logger.warning("Refined TMDB search failed: %s", e)
+            else:
+                tmdb = TMDBMediaResult(
+                    id=0,
+                    title=detected_query,
+                    original_title=detected_query,
+                    year=detected_year,
+                    media_type=media_type,
+                    overview="",
+                    poster_url="",
+                )
+
+        # Re-evaluate target destination root according to final media_type
+        if media_type == "tv":
+            dest_root = (
+                data.get("target_root_dir")
+                or user_settings.get("tv_dir")
+                or self.config.media.tv_dir
+            )
+        else:
+            dest_root = (
+                data.get("target_root_dir")
+                or user_settings.get("movie_dir")
+                or self.config.media.movie_dir
+            )
+
+        logger.info("Task %s classified as %s: %s (Target: %s)", task_id, media_type, tmdb.display_name, dest_root)
 
         # 5. Prepare TMDB episode metadata if TV show
         tv_episodes_cache: Dict[int, Dict[int, Any]] = {}
