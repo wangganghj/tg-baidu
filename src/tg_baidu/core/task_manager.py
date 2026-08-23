@@ -1,5 +1,6 @@
 """
-Async background task manager for transferring Baidu shares and TMDB-based media organization.
+Async background task manager for transferring Baidu shares to a temporary directory,
+performing TMDB identification and renaming, and organizing into Movie/TV libraries.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class TransferTaskManager:
-    """Manages asynchronous transfer and file renaming jobs."""
+    """Manages asynchronous transfer, TMDB identification, and file organization jobs."""
 
     def __init__(
         self,
@@ -136,7 +137,7 @@ class TransferTaskManager:
         tmdb: TMDBMediaResult = data["tmdb_result"]
         media_type: str = data["media_type"]
 
-        # Determine target root directory
+        # Determine target destination directory
         user_settings = await self.db.get_user_settings(user_id)
         if media_type == "tv":
             dest_root = (
@@ -151,73 +152,84 @@ class TransferTaskManager:
                 or self.config.media.movie_dir
             )
 
+        # 1. Staging directory: Save to temporary directory first
+        temp_dir = f"/Media/Temp/{task_id}"
+        await self.baidu_client.ensure_dir(temp_dir)
+
         await self.db.update_task_status(task_id, status="PROCESSING", progress=0.1)
         await self._notify(
             user_id,
             f"🚀 **开始处理任务** (`{task_id}`)\n"
-            f"🎬 **匹配媒体**: {tmdb.display_name} ({'剧集' if media_type == 'tv' else '电影'})\n"
-            f"📂 **目标目录**: `{dest_root}`\n"
-            f"⏳ 正在解析并转存分享链接...",
+            f"📥 **临时目录**: `{temp_dir}`\n"
+            f"📂 **最终归档**: `{dest_root}`\n"
+            f"⏳ 正在将分享链接转存至临时目录...",
         )
 
-        # 1. Parse share info
-        from ..baidu.share_parser import BaiduShareParser
-
-        parsed_link = BaiduShareParser.parse(share_url)
-        if not parsed_link:
-            raise ValueError(f"Invalid Baidu share URL: {share_url}")
-
-        pwd = share_pwd or parsed_link.pwd
-        share_info = await self.baidu_client.get_share_info(parsed_link.surl, pwd)
-        share_id = share_info["share_id"]
-        from_uk = share_info["uk"]
-        files = share_info.get("file_list", [])
-
-        if not files:
-            raise ValueError("No files found in this share link.")
-
-        fs_ids = [f["fs_id"] for f in files]
-
-        # 2. Transfer to a temporary staging folder
-        temp_dir = f"/Media/Temp/{task_id}"
-        await self.baidu_client.create_dir(temp_dir)
+        # 2. Transfer shared files into the temporary directory
         await self.baidu_client.transfer_share_files(
-            share_id=share_id,
-            from_uk=from_uk,
-            fs_id_list=fs_ids,
-            dest_dir=temp_dir,
-            pwd=pwd,
+            share_url=share_url,
+            share_pwd=share_pwd,
+            target_dir=temp_dir,
         )
 
-        await self.db.update_task_status(task_id, status="PROCESSING", progress=0.4)
+        await self.db.update_task_status(task_id, status="PROCESSING", progress=0.35)
         await self._notify(
             user_id,
-            f"📦 **转存成功** (`{task_id}`)\n"
-            f"🔄 正在按照 TMDB 规范智能重命名并归档...",
+            f"📦 **临时目录转存完成** (`{task_id}`)\n"
+            f"🔍 正在扫描文件并进行 TMDB 影视识别与重命名...",
         )
 
-        # 3. List transferred files in temporary directory (recursively)
+        # 3. Recursively list all files in the temporary directory
         all_transferred_files = await self._list_all_recursive(temp_dir)
         video_files = [
             f for f in all_transferred_files if not f.isdir and MediaParser.is_video_file(f.server_filename)
         ]
 
         if not video_files:
-            # Maybe the transfer contains non-standard video extensions or folder structure
             video_files = [f for f in all_transferred_files if not f.isdir]
 
         total_files = len(video_files)
+        if total_files == 0:
+            raise ValueError(f"临时目录 '{temp_dir}' 中未找到可处理的文件。")
+
         await self.db.update_task_status(
             task_id,
             status="PROCESSING",
-            progress=0.6,
+            progress=0.5,
             total_files=total_files,
         )
 
-        # 4. Prepare TMDB episode metadata if TV show
-        tv_episodes_cache: Dict[int, Dict[int, Any]] = {}
+        # 4. Refine TMDB match if original was unindexed/placeholder
+        if tmdb.id == 0 and getattr(self.tmdb_client, "api_key", None):
+            first_vf = video_files[0]
+            first_parsed = MediaParser.parse_filename(first_vf.server_filename)
+            if first_parsed.cleaned_title:
+                try:
+                    candidates = await self.tmdb_client.search_multi(
+                        query=first_parsed.cleaned_title,
+                        media_type=media_type if media_type in ("movie", "tv") else "auto",
+                        year=first_parsed.year,
+                    )
+                    if candidates:
+                        tmdb = candidates[0]
+                        media_type = tmdb.media_type
+                        if media_type == "tv":
+                            dest_root = (
+                                data.get("target_root_dir")
+                                or user_settings.get("tv_dir")
+                                or self.config.media.tv_dir
+                            )
+                        else:
+                            dest_root = (
+                                data.get("target_root_dir")
+                                or user_settings.get("movie_dir")
+                                or self.config.media.movie_dir
+                            )
+                except Exception as e:
+                    logger.debug("Refined TMDB search notice: %s", e)
 
-        # 5. Build Move & Rename Operations
+        # 5. Prepare TMDB episode metadata if TV show
+        tv_episodes_cache: Dict[int, Dict[int, Any]] = {}
         move_operations = []
         renamed_summary = []
 
@@ -228,7 +240,7 @@ class TransferTaskManager:
                 season = parsed_info.season or 1
                 episode_num = parsed_info.episode or 1
 
-                if season not in tv_episodes_cache:
+                if season not in tv_episodes_cache and tmdb.id > 0:
                     ep_map = await self.tmdb_client.get_season_episodes(
                         tmdb.id,
                         season,
@@ -236,7 +248,7 @@ class TransferTaskManager:
                     )
                     tv_episodes_cache[season] = ep_map
 
-                ep_info = tv_episodes_cache[season].get(episode_num)
+                ep_info = tv_episodes_cache.get(season, {}).get(episode_num)
                 dest_full_path = PathFormatter.format_tv_path(
                     root_dir=dest_root,
                     tmdb=tmdb,
@@ -267,14 +279,16 @@ class TransferTaskManager:
             )
             renamed_summary.append(f"• `{vf.server_filename}`\n  ➡️ `{dest_full_path}`")
 
-        # 6. Execute batch move & rename on Baidu Netdisk
+        # 6. Execute batch move & rename from temporary directory into destination
+        await self.db.update_task_status(task_id, status="PROCESSING", progress=0.75)
         if move_operations:
             await self.baidu_client.batch_move_and_rename(move_operations)
 
-        # 7. Cleanup temp directory
+        # 7. Cleanup temporary directory
         if self.config.media.cleanup_temp_dirs:
             try:
                 await self.baidu_client.delete_file(temp_dir)
+                logger.info("Cleaned up temp directory: %s", temp_dir)
             except Exception as e:
                 logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
@@ -293,7 +307,7 @@ class TransferTaskManager:
 
         await self._notify(
             user_id,
-            f"🎉 **任务完成！** (`{task_id}`)\n"
+            f"🎉 **任务完成！已成功归档** (`{task_id}`)\n"
             f"🎬 **媒体**: {tmdb.display_name}\n"
             f"📂 **整理结果 ({total_files} 个文件)**:\n{summary_text}",
         )

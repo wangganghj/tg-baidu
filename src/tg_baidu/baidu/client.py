@@ -548,6 +548,42 @@ class BaiduClient:
             )
         return {"errno": 0, "count": len(move_items)}
 
+    async def delete_file(self, *paths: str) -> Dict[str, Any]:
+        """Delete files or directories from Baidu Netdisk."""
+        return await asyncio.to_thread(self._sync_delete_file, *paths)
+
+    def _sync_delete_file(self, *paths: str) -> Dict[str, Any]:
+        if not paths or self._pcs_api is None:
+            return {"errno": 0}
+        clean_paths = ["/" + p.strip("/") for p in paths if p]
+        try:
+            self._pcs_api.remove(*clean_paths)
+            logger.info("Deleted paths from Baidu Netdisk: %s", clean_paths)
+            return {"errno": 0}
+        except Exception as e:
+            logger.warning("BaiduPCSApi remove notice: %s, trying web filemanager delete...", e)
+            try:
+                session = self._pcs_api._baidupcs._session
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://pan.baidu.com/disk/home",
+                }
+                import json
+                params = {
+                    "opera": "delete",
+                    "async": 2,
+                    "channel": "chunlei",
+                    "web": 1,
+                    "app_id": 250528,
+                    "clienttype": 0,
+                }
+                data = {"filelist": json.dumps(clean_paths)}
+                session.post("https://pan.baidu.com/api/filemanager", params=params, data=data, headers=headers, timeout=8)
+                return {"errno": 0}
+            except Exception as e2:
+                logger.error("Web delete failed: %s", e2)
+        return {"errno": 0}
+
     async def transfer_share_files(
         self,
         share_url: str,
