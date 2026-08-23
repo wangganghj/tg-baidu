@@ -59,16 +59,23 @@ class BotHandlers:
 
     def _is_user_allowed(self, user_id: int) -> bool:
         """Check if user has permission to use the bot."""
-        allowed = self.config.telegram.allowed_user_ids
-        if not allowed:
+        admin_id = self.config.telegram.admin_user_id
+        allowed = self.config.telegram.allowed_user_ids or []
+        if not admin_id and not allowed:
             return True
-        return user_id in allowed or user_id == self.config.telegram.admin_user_id
+        return (admin_id == user_id) or (user_id in allowed)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         user = update.effective_user
+        msg = update.effective_message or update.message
         if not self._is_user_allowed(user.id):
-            await update.message.reply_text("⛔ 您没有使用此机器人的权限。")
+            if msg:
+                await msg.reply_text(
+                    f"⛔ <b>权限不足</b>\n\n您的 Telegram User ID 为 <code>{user.id}</code>，未在机器人的白名单中。\n"
+                    "请在 Web 控制台的系统设置中将该 ID 填入 Admin User ID 或白名单中。",
+                    parse_mode=ParseMode.HTML,
+                )
             return
 
         welcome_text = (
@@ -84,11 +91,13 @@ class BotHandlers:
             f"3. 直接发送<b>百度网盘分享链接</b>即可开始转存！\n\n"
             f"输入 /help 查看所有可用命令。"
         )
-        await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+        if msg:
+            await msg.reply_text(welcome_text, parse_mode=ParseMode.HTML)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
         user = update.effective_user
+        msg = update.effective_message or update.message
         if not self._is_user_allowed(user.id):
             return
 
@@ -98,12 +107,6 @@ class BotHandlers:
             "• /login - 获取百度网盘 OAuth2 授权链接\n"
             "• /code &lt;授权码&gt; - 提交授权码完成绑定\n"
             "• /status - 查看账号信息与百度网盘存储配额\n"
-            "• /settings - 个人偏好设置（目录、TMDB语言、自动转存）\n"
-            "• /tasks - 查看最近的转存与整理任务\n"
-            "• /search &lt;关键词&gt; - 手动搜索 TMDB 影视条目\n"
-            "• /help - 查看本帮助信息\n\n"
-            "<b>转存使用方式</b>：\n"
-            "直接在对话框发送包含百度网盘链接的消息，例如：\n"
             "<code>链接: https://pan.baidu.com/s/1xxxx 提取码: abcd 繁花.2023.4K</code>\n\n"
             "机器人会自动解析链接、提取影视名称并在 TMDB 检索，随后提供交互按钮供你确认。"
         )
@@ -277,10 +280,22 @@ class BotHandlers:
             await status_msg.edit_text(f"搜索失败: {e}")
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process incoming messages to detect Baidu Pan share links (including forwarded Telegram posts, rich text, and inline buttons)."""
+        """Process incoming messages to detect Baidu Pan share links (including forwarded Telegram posts, rich text, photos, and inline buttons)."""
         user = update.effective_user
-        msg = update.message
-        if not user or not msg or not self._is_user_allowed(user.id):
+        msg = update.effective_message or update.message
+        if not user or not msg:
+            return
+
+        if not self._is_user_allowed(user.id):
+            logger.warning("Disallowed Telegram message from user %s (chat_id: %s)", user.id, update.effective_chat.id if update.effective_chat else "?")
+            try:
+                await msg.reply_text(
+                    f"⛔ <b>权限不足</b>\n\n您的 Telegram User ID 为 <code>{user.id}</code>，未在机器人的白名单中。\n"
+                    "请在 Web 控制台的系统设置中将该 ID 填入 Admin User ID 或白名单中。",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
             return
 
         # 1. Extract complete text from message, caption, embedded hyperlinks, inline buttons, and replied messages
@@ -308,12 +323,22 @@ class BotHandlers:
         if not full_text:
             return
 
+        logger.info("Bot received Telegram message from user %s: %s", user.id, full_text[:120])
+
         # 2. Parse Baidu share link & extraction code
         share_link = BaiduShareParser.parse(full_text)
         if not share_link:
-            return  # Not a baidu share link message
+            is_private = update.effective_chat and update.effective_chat.type == "private"
+            if is_private and any(kw in full_text.lower() for kw in ("baidu", "pan", "网盘", "提取码", "密码", "http", "s/")):
+                await msg.reply_text(
+                    "⚠️ 未能在消息中识别到有效的百度网盘分享链接。\n\n"
+                    "💡 提示：标准链接格式如 <code>https://pan.baidu.com/s/1xxxx?pwd=abcd</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
 
-        status_msg = await update.message.reply_text("🔍 检测到百度网盘分享链接，正在解析媒体信息...")
+        logger.info("Recognized Baidu share link: %s (pwd=%s)", share_link.clean_share_url, share_link.pwd)
+        status_msg = await msg.reply_text("🔍 检测到百度网盘分享链接，正在解析媒体信息...")
 
         try:
             # 3. Extract media title candidate from forwarded/complex message text
@@ -632,4 +657,4 @@ class BotHandlers:
         app.add_handler(CommandHandler("tasks", self.tasks_command))
         app.add_handler(CommandHandler("search", self.search_command))
         app.add_handler(CallbackQueryHandler(self.on_callback_query))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
+        app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.on_message))
