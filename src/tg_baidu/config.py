@@ -147,6 +147,17 @@ class Config(BaseModel):
 
         return cls(**data)
 
+    def save_yaml(self, config_path: Optional[str | Path] = None) -> None:
+        """Save current config to YAML file in persistent volume."""
+        target_path = Path(config_path) if config_path else Path("data/config.yaml")
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            data = self.model_dump()
+            with open(target_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            print(f"Warning: Failed to save config to {target_path}: {e}")
+
 
 # Global singleton instance holder
 _global_config: Optional[Config] = None

@@ -131,8 +131,31 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> D
     if payload.media_cleanup_temp_dirs is not None:
         config.media.cleanup_temp_dirs = payload.media_cleanup_temp_dirs
 
-    logger.info("Settings updated successfully.")
-    return {"success": True, "message": "Settings updated successfully."}
+    # Persist all settings to SQLite system_settings table
+    persisted_dict = {
+        "telegram_bot_token": config.telegram.bot_token,
+        "telegram_admin_user_id": config.telegram.admin_user_id,
+        "telegram_allowed_user_ids": config.telegram.allowed_user_ids,
+        "tmdb_api_key": config.tmdb.api_key,
+        "tmdb_language": config.tmdb.language,
+        "tmdb_include_adult": config.tmdb.include_adult,
+        "baidu_cookie": config.baidu.cookie,
+        "baidu_bduss": config.baidu.bduss,
+        "baidu_stoken": config.baidu.stoken,
+        "media_movie_dir": config.media.movie_dir,
+        "media_tv_dir": config.media.tv_dir,
+        "media_movie_format": config.media.movie_format,
+        "media_tv_format": config.media.tv_format,
+        "media_auto_transfer": config.media.auto_transfer,
+        "media_cleanup_temp_dirs": config.media.cleanup_temp_dirs,
+    }
+    await db.save_system_settings(persisted_dict)
+
+    # Persist to data/config.yaml in persistent volume
+    config.save_yaml("data/config.yaml")
+
+    logger.info("Settings updated and persisted successfully to SQLite and YAML.")
+    return {"success": True, "message": "Settings updated and persisted successfully."}
 
 
 @router.post("/test-tmdb")

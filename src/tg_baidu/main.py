@@ -52,6 +52,45 @@ async def run_services(config: Config) -> None:
     db = Database(config.system.database_path)
     await db.init()
 
+    # Load all persisted system settings from SQLite and apply to config
+    try:
+        persisted_settings = await db.get_all_system_settings()
+        if persisted_settings:
+            if "telegram_bot_token" in persisted_settings and persisted_settings["telegram_bot_token"]:
+                config.telegram.bot_token = persisted_settings["telegram_bot_token"]
+            if "telegram_admin_user_id" in persisted_settings and persisted_settings["telegram_admin_user_id"]:
+                try:
+                    config.telegram.admin_user_id = int(persisted_settings["telegram_admin_user_id"])
+                except Exception:
+                    pass
+            if "tmdb_api_key" in persisted_settings and persisted_settings["tmdb_api_key"]:
+                config.tmdb.api_key = persisted_settings["tmdb_api_key"]
+            if "tmdb_language" in persisted_settings and persisted_settings["tmdb_language"]:
+                config.tmdb.language = persisted_settings["tmdb_language"]
+            if "tmdb_include_adult" in persisted_settings:
+                config.tmdb.include_adult = persisted_settings["tmdb_include_adult"] in ("True", "true", "1", 1, True)
+            if "baidu_cookie" in persisted_settings and persisted_settings["baidu_cookie"]:
+                config.baidu.cookie = persisted_settings["baidu_cookie"]
+            if "baidu_bduss" in persisted_settings and persisted_settings["baidu_bduss"]:
+                config.baidu.bduss = persisted_settings["baidu_bduss"]
+            if "baidu_stoken" in persisted_settings and persisted_settings["baidu_stoken"]:
+                config.baidu.stoken = persisted_settings["baidu_stoken"]
+            if "media_movie_dir" in persisted_settings and persisted_settings["media_movie_dir"]:
+                config.media.movie_dir = persisted_settings["media_movie_dir"]
+            if "media_tv_dir" in persisted_settings and persisted_settings["media_tv_dir"]:
+                config.media.tv_dir = persisted_settings["media_tv_dir"]
+            if "media_movie_format" in persisted_settings and persisted_settings["media_movie_format"]:
+                config.media.movie_format = persisted_settings["media_movie_format"]
+            if "media_tv_format" in persisted_settings and persisted_settings["media_tv_format"]:
+                config.media.tv_format = persisted_settings["media_tv_format"]
+            if "media_auto_transfer" in persisted_settings:
+                config.media.auto_transfer = persisted_settings["media_auto_transfer"] in ("True", "true", "1", 1, True)
+            if "media_cleanup_temp_dirs" in persisted_settings:
+                config.media.cleanup_temp_dirs = persisted_settings["media_cleanup_temp_dirs"] in ("True", "true", "1", 1, True)
+            logger.info("Loaded %d persisted settings from database.", len(persisted_settings))
+    except Exception as e:
+        logger.warning("Failed to load persisted system settings: %s", e)
+
     # 2. Initialize Baidu Auth and Client from DB and Config
     auth_manager = BaiduAuthManager(
         app_key=config.baidu.app_key,

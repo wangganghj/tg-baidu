@@ -67,6 +67,17 @@ class Database:
                 """
             )
 
+            # System Settings table for persistence across container rebuilds
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+
             # Task History table
             await db.execute(
                 """
@@ -92,6 +103,54 @@ class Database:
             )
             await db.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
+
+    # --------------------------------------------------------------------------
+    # System Settings Management
+    # --------------------------------------------------------------------------
+
+    async def save_system_setting(self, key: str, value: Any) -> None:
+        """Save a single system configuration key/value into SQLite."""
+        now = time.time()
+        val_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO system_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, val_str, now),
+            )
+            await db.commit()
+
+    async def save_system_settings(self, settings_dict: Dict[str, Any]) -> None:
+        """Save multiple system configuration key/values into SQLite."""
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            for k, v in settings_dict.items():
+                if v is not None:
+                    val_str = str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
+                    await db.execute(
+                        """
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value = excluded.value,
+                            updated_at = excluded.updated_at
+                        """,
+                        (k, val_str, now),
+                    )
+            await db.commit()
+
+    async def get_all_system_settings(self) -> Dict[str, str]:
+        """Retrieve all persisted system settings from SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT key, value FROM system_settings")
+            rows = await cursor.fetchall()
+            return {row["key"]: row["value"] for row in rows}
 
     # --------------------------------------------------------------------------
     # Baidu Auth Token Management
