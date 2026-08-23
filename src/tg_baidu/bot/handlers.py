@@ -58,25 +58,13 @@ class BotHandlers:
         self._sessions: Dict[str, Dict[str, Any]] = {}
 
     def _is_user_allowed(self, user_id: int) -> bool:
-        """Check if user has permission to use the bot."""
-        admin_id = self.config.telegram.admin_user_id
-        allowed = self.config.telegram.allowed_user_ids or []
-        if not admin_id and not allowed:
-            return True
-        return (admin_id == user_id) or (user_id in allowed)
+        """Allow all users to interact with the bot without restrictions."""
+        return True
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         user = update.effective_user
         msg = update.effective_message or update.message
-        if not self._is_user_allowed(user.id):
-            if msg:
-                await msg.reply_text(
-                    f"⛔ <b>权限不足</b>\n\n您的 Telegram User ID 为 <code>{user.id}</code>，未在机器人的白名单中。\n"
-                    "请在 Web 控制台的系统设置中将该 ID 填入 Admin User ID 或白名单中。",
-                    parse_mode=ParseMode.HTML,
-                )
-            return
 
         welcome_text = (
             f"👋 <b>你好，{html.escape(user.first_name)}！</b>\n\n"
