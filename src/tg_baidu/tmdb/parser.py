@@ -110,10 +110,23 @@ class MediaParser:
 
     @classmethod
     def clean_junk(cls, filename: str) -> str:
-        """Remove ad texts, watermarks, domain names."""
+        """Remove ad texts, watermarks, domain names, and fullwidth bracket replacements."""
         name = filename
+        # Replace fullwidth brackets and punctuation
+        name = name.replace("（", "(").replace("）", ")").replace("【", "[").replace("】", "]")
+        name = name.replace("：", ":").replace("，", ",").replace("／", "/")
+
         for pattern in JUNK_PATTERNS:
             name = re.sub(pattern, " ", name, flags=re.IGNORECASE)
+
+        # Strip common release format noise words
+        name = re.sub(
+            r"\b(NF|DV&HDR|DV|HDR10|HDR|WEB-DL|WEBRip|BluRay|HDTV|BD|HD|TC|H\.?26[45]|HEVC|AVC|1080p|2160p|4K|720p|AAC|DDP|Atmos|Complete|FLAC)\b",
+            " ",
+            name,
+            flags=re.IGNORECASE,
+        )
+
         # Collapse repeated spaces/dots/underscores
         name = re.sub(r"[\s_.]+", " ", name).strip()
         return name

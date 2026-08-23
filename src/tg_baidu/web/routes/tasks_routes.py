@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from ...baidu.share_parser import BaiduShareParser
+from ...tmdb.client import TMDBMediaResult
 from ...tmdb.parser import MediaParser
 
 logger = logging.getLogger(__name__)
@@ -77,49 +78,83 @@ async def submit_transfer_task(payload: SubmitTaskRequest, request: Request) -> 
     """Submit a new Baidu Pan share link for processing directly from Web UI."""
     task_manager = request.app.state.task_manager
     tmdb_client = request.app.state.tmdb_client
+    baidu_client = request.app.state.baidu_client
     config = request.app.state.config
 
     # 1. Parse share link
     share_link = BaiduShareParser.parse(payload.share_url)
     if not share_link:
-        raise HTTPException(status_code=400, detail="Invalid Baidu Netdisk share link.")
+        raise HTTPException(status_code=400, detail="未识别到有效的百度网盘分享链接 (https://pan.baidu.com/s/...)")
 
     pwd = payload.share_pwd or share_link.pwd
 
-    # 2. Extract media title
-    search_query = payload.custom_title.strip()
+    # 2. Extract media title (from custom_title, or share content inspection, or URL text)
+    search_query = (payload.custom_title or "").strip()
+    detected_type = payload.media_type or "auto"
+    detected_year = None
+
     if not search_query:
-        parsed_media = MediaParser.parse_filename(payload.share_url)
-        search_query = parsed_media.cleaned_title or payload.share_url
-        detected_type = parsed_media.media_type
-        detected_year = parsed_media.year
-    else:
-        detected_type = payload.media_type or "auto"
-        detected_year = None
+        # Query share content to find real file/folder names
+        share_info = await baidu_client.get_share_content_info(payload.share_url, pwd)
+        raw_name = ""
+        if share_info and share_info.get("items"):
+            first_item = share_info["items"][0]
+            raw_name = first_item.get("server_filename") or share_info.get("title", "")
+            if first_item.get("isdir") in (1, "1", True) or "剧" in share_info.get("title", ""):
+                detected_type = "tv"
+        elif share_info and share_info.get("title"):
+            raw_name = share_info.get("title", "")
 
-    # 3. Search TMDB
-    results = await tmdb_client.search_multi(
-        query=search_query,
-        media_type=detected_type if detected_type != "auto" else "auto",
-        year=detected_year,
-    )
-    if not results:
-        results = await tmdb_client.search_multi(query=search_query)
+        if raw_name:
+            clean_raw = raw_name.split("/")[-1]
+            parsed_media = MediaParser.parse_filename(clean_raw)
+            search_query = parsed_media.cleaned_title or clean_raw
+            detected_year = parsed_media.year
+            if detected_type == "auto":
+                detected_type = parsed_media.media_type
+        else:
+            parsed_media = MediaParser.parse_filename(payload.share_url)
+            search_query = parsed_media.cleaned_title or payload.share_url
+            detected_year = parsed_media.year
 
-    if not results:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not find matching movie/TV in TMDB for query: '{search_query}'.",
+    # 3. Search TMDB if api key is configured
+    best_match = None
+    if getattr(tmdb_client, "api_key", None) and search_query and not search_query.startswith("http"):
+        try:
+            results = await tmdb_client.search_multi(
+                query=search_query,
+                media_type=detected_type if detected_type in ("movie", "tv") else "auto",
+                year=detected_year,
+            )
+            if not results:
+                results = await tmdb_client.search_multi(query=search_query)
+            if results:
+                best_match = results[0]
+        except Exception as e:
+            logger.warning("TMDB search notice: %s", e)
+
+    # 4. Fallback if TMDB search has no result or no API key
+    if not best_match:
+        final_title = search_query if (search_query and not search_query.startswith("http")) else "百度网盘分享资源"
+        final_type = detected_type if detected_type in ("movie", "tv") else "movie"
+        best_match = TMDBMediaResult(
+            id=0,
+            title=final_title,
+            original_title=final_title,
+            year=detected_year,
+            media_type=final_type,
+            overview="百度网盘直接转存归档",
+            poster_url="",
+            vote_average=0.0,
         )
 
-    best_match = results[0]
     final_type = (
         payload.media_type
         if payload.media_type in ("movie", "tv")
         else best_match.media_type
     )
 
-    # 4. Enqueue task
+    # 5. Enqueue task
     admin_id = config.telegram.admin_user_id or 0
     task_id = await task_manager.enqueue_task(
         telegram_user_id=admin_id,
@@ -148,12 +183,12 @@ async def delete_task(task_id: str, request: Request) -> Dict[str, Any]:
     """Delete a task record from database."""
     db = request.app.state.db
     await db.delete_task(task_id)
-    return {"success": True, "message": f"Task {task_id} deleted."}
+    return {"success": True, "task_id": task_id}
 
 
 @router.post("/clear")
 async def clear_tasks(payload: ClearTasksRequest, request: Request) -> Dict[str, Any]:
-    """Clear completed/failed task records."""
+    """Clear tasks by status."""
     db = request.app.state.db
-    await db.clear_tasks(payload.status)
-    return {"success": True, "message": "Tasks cleared successfully."}
+    deleted = await db.clear_tasks(status=payload.status)
+    return {"success": True, "deleted_count": deleted}

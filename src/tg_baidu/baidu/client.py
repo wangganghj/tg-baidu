@@ -616,3 +616,46 @@ class BaiduClient:
                 }
             )
         return transferred
+
+    async def get_share_content_info(self, share_url: str, share_pwd: str = "") -> Optional[Dict[str, Any]]:
+        """Fetch title and shared items inside a Baidu Netdisk share link."""
+        return await asyncio.to_thread(self._sync_get_share_content_info, share_url, share_pwd)
+
+    def _sync_get_share_content_info(self, share_url: str, share_pwd: str = "") -> Optional[Dict[str, Any]]:
+        import requests
+        from .share_parser import BaiduShareParser
+        share_link = BaiduShareParser.parse(share_url)
+        if not share_link:
+            return None
+        surl = share_link.surl.lstrip("1")
+        pwd = share_pwd or share_link.pwd
+
+        session = self._pcs_api._baidupcs._session if (self._pcs_api and hasattr(self._pcs_api, "_baidupcs")) else requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": f"https://pan.baidu.com/s/1{surl}",
+        })
+
+        if pwd:
+            try:
+                verify_url = f"https://pan.baidu.com/share/verify?channel=chunlei&clienttype=0&web=1&app_id=250528&surl={surl}"
+                session.post(verify_url, data={"pwd": pwd, "vcode": "", "vcode_str": ""}, timeout=8)
+            except Exception as e:
+                logger.debug("share verify exception: %s", e)
+
+        try:
+            list_url = f"https://pan.baidu.com/share/list?channel=chunlei&clienttype=0&web=1&app_id=250528&shorturl={surl}&root=1"
+            resp = session.get(list_url, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("errno") == 0:
+                    return {
+                        "title": data.get("title", ""),
+                        "items": data.get("list", []),
+                        "share_id": data.get("share_id"),
+                        "uk": data.get("uk"),
+                    }
+        except Exception as e:
+            logger.debug("share list exception: %s", e)
+
+        return None

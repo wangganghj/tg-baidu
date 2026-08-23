@@ -294,31 +294,70 @@ class BotHandlers:
         status_msg = await update.message.reply_text("🔍 检测到百度网盘分享链接，正在解析媒体信息...")
 
         try:
-            # 2. Extract media title & properties from the text/link
-            parsed_media = MediaParser.parse_filename(text)
-            search_query = parsed_media.cleaned_title or text
+            # 2. Extract media title from user text or query share content
+            import re
+            text_without_link = re.sub(r"https?://pan\.baidu\.com/[^\s]+", "", text).strip()
+            text_without_link = re.sub(r"(?:提取码|密码|码|pwd)[:：\s=]*[a-zA-Z0-9]{4}", "", text_without_link, flags=re.I).strip()
+
+            raw_title = text_without_link
+            detected_type = "auto"
+            detected_year = None
+
+            if not raw_title:
+                # User sent bare link, inspect share content from Baidu
+                share_info = await self.baidu_client.get_share_content_info(share_link.clean_share_url, share_link.pwd)
+                if share_info and share_info.get("items"):
+                    first_item = share_info["items"][0]
+                    raw_title = first_item.get("server_filename") or share_info.get("title", "")
+                    if first_item.get("isdir") in (1, "1", True) or "剧" in share_info.get("title", ""):
+                        detected_type = "tv"
+                elif share_info and share_info.get("title"):
+                    raw_title = share_info.get("title", "")
+
+            if not raw_title:
+                raw_title = text
+
+            clean_raw = raw_title.split("/")[-1]
+            parsed_media = MediaParser.parse_filename(clean_raw)
+            search_query = parsed_media.cleaned_title or clean_raw
+            if parsed_media.year:
+                detected_year = parsed_media.year
+            if detected_type == "auto":
+                detected_type = parsed_media.media_type
 
             # 3. Search TMDB
-            results = await self.tmdb_client.search_multi(
-                query=search_query,
-                media_type=parsed_media.media_type,
-                year=parsed_media.year,
-            )
+            best_match = None
+            results = []
+            if getattr(self.tmdb_client, "api_key", None) and search_query and not search_query.startswith("http"):
+                try:
+                    results = await self.tmdb_client.search_multi(
+                        query=search_query,
+                        media_type=detected_type if detected_type in ("movie", "tv") else "auto",
+                        year=detected_year,
+                    )
+                    if not results:
+                        results = await self.tmdb_client.search_multi(query=search_query)
+                    if results:
+                        best_match = results[0]
+                except Exception as e:
+                    logger.warning("TMDB bot search notice: %s", e)
 
-            if not results:
-                # Fallback: search without media type constraint
-                results = await self.tmdb_client.search_multi(query=search_query)
-
-            if not results:
-                await status_msg.edit_text(
-                    f"⚠️ 在 TMDB 中未能自动找到匹配项。\n"
-                    f"解析关键词: <code>{html.escape(search_query)}</code>\n"
-                    f"建议使用 <code>/search 关键词</code> 手动查询。",
-                    parse_mode=ParseMode.HTML,
+            # 4. Fallback if TMDB search has no result
+            if not best_match:
+                final_title = search_query if (search_query and not search_query.startswith("http")) else "百度网盘分享资源"
+                final_type = detected_type if detected_type in ("movie", "tv") else "movie"
+                best_match = TMDBMediaResult(
+                    id=0,
+                    title=final_title,
+                    original_title=final_title,
+                    year=detected_year,
+                    media_type=final_type,
+                    overview="百度网盘直接转存归档",
+                    poster_url="",
+                    vote_average=0.0,
                 )
-                return
+                results = [best_match]
 
-            best_match = results[0]
             session_id = uuid.uuid4().hex[:10]
             self._sessions[session_id] = {
                 "share_url": share_link.clean_share_url,
