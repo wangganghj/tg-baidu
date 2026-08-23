@@ -1,5 +1,5 @@
 """
-Parser for extracting Baidu Netdisk share links and extraction codes (pwd) from messages.
+Parser for extracting Baidu Netdisk share links and extraction codes (pwd) from Telegram messages and complex text.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Optional
 @dataclass
 class BaiduShareLink:
     raw_text: str
-    surl: str  # Short URL key (without '1' prefix if surl, or full short key)
+    surl: str  # Short URL key (without '1' prefix if standard surl)
     full_url: str
     pwd: str = ""
 
@@ -23,31 +23,28 @@ class BaiduShareLink:
 
 
 class BaiduShareParser:
-    """Extracts Baidu Netdisk share URLs and extraction codes from raw text."""
+    """Extracts Baidu Netdisk share URLs and extraction codes from raw text or forwarded messages."""
 
-    # Regex patterns for pan.baidu.com share links
+    # Regex patterns for pan.baidu.com / yun.baidu.com share links
     URL_PATTERN_S = re.compile(
-        r"https?://pan\.baidu\.com/s/(1[a-zA-Z0-9_-]{5,25}|[a-zA-Z0-9_-]{5,25})",
+        r"(?:https?://)?(?:pan|yun)\.baidu\.com/s/([a-zA-Z0-9_-]+)",
         re.IGNORECASE,
     )
     URL_PATTERN_INIT = re.compile(
-        r"https?://pan\.baidu\.com/share/init\?surl=([a-zA-Z0-9_-]{5,25})",
+        r"(?:https?://)?(?:pan|yun)\.baidu\.com/share/init\?([^\s\)\'\"\]]+)",
         re.IGNORECASE,
     )
 
-    # Regex patterns for extraction codes (pwd/提取码/密码)
+    # Regex patterns for extraction codes (pwd/提取码/密码/访问码/code)
     PWD_PATTERNS = [
-        re.compile(r"pwd=([a-zA-Z0-9]{4})", re.IGNORECASE),
-        re.compile(r"提取码\s*[:：\s]*([a-zA-Z0-9]{4})", re.IGNORECASE),
-        re.compile(r"密码\s*[:：\s]*([a-zA-Z0-9]{4})", re.IGNORECASE),
-        re.compile(r"码\s*[:：\s]*([a-zA-Z0-9]{4})", re.IGNORECASE),
-        re.compile(r"\b([a-zA-Z0-9]{4})\b"),
+        re.compile(r"[?&]pwd=([a-zA-Z0-9]{4})", re.IGNORECASE),
+        re.compile(r"(?:提取码|提取密码|访问码|密码|提取|pwd|code|码)[:：\s=]*([a-zA-Z0-9]{4})\b", re.IGNORECASE),
     ]
 
     @classmethod
     def parse(cls, text: str) -> Optional[BaiduShareLink]:
         """
-        Parse first Baidu share link and extraction code from arbitrary text.
+        Parse first Baidu share link and extraction code from arbitrary text or forwarded message.
         """
         if not text:
             return None
@@ -56,37 +53,35 @@ class BaiduShareParser:
         full_url = ""
         pwd = ""
 
-        # 1. Match /s/ link
+        # 1. Match /s/ link on pan.baidu.com or yun.baidu.com
         m_s = cls.URL_PATTERN_S.search(text)
         if m_s:
             full_match = m_s.group(0)
             raw_key = m_s.group(1)
-            # Remove leading '1' if present for standard surl internal key
+            # Normalize short key (strip leading '1' for internal standard surl key)
             surl = raw_key[1:] if raw_key.startswith("1") else raw_key
-            full_url = full_match
+            full_url = full_match if full_match.startswith("http") else f"https://{full_match}"
         else:
             # 2. Match /share/init?surl= link
             m_init = cls.URL_PATTERN_INIT.search(text)
             if m_init:
-                surl = m_init.group(1)
-                full_url = m_init.group(0)
+                raw_init_url = m_init.group(0)
+                full_url = raw_init_url if raw_init_url.startswith("http") else f"https://{raw_init_url}"
+                parsed_url = urllib.parse.urlparse(full_url)
+                query_params = urllib.parse.parse_qs(parsed_url.query)
+                if "surl" in query_params and query_params["surl"]:
+                    raw_key = query_params["surl"][0]
+                    surl = raw_key[1:] if raw_key.startswith("1") else raw_key
 
         if not surl:
             return None
 
-        # 3. Check for pwd query parameter in URL (e.g. ?pwd=abcd)
-        parsed_url = urllib.parse.urlparse(full_url)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        if "pwd" in query_params and query_params["pwd"]:
-            pwd = query_params["pwd"][0]
-
-        # 4. Search in full text for extraction code patterns if not in URL query
-        if not pwd:
-            for pattern in cls.PWD_PATTERNS[:-1]:
-                m_pwd = pattern.search(text)
-                if m_pwd:
-                    pwd = m_pwd.group(1)
-                    break
+        # 3. Extract pwd from URL query or text patterns
+        for pattern in cls.PWD_PATTERNS:
+            m_pwd = pattern.search(text)
+            if m_pwd:
+                pwd = m_pwd.group(1)
+                break
 
         return BaiduShareLink(
             raw_text=text,

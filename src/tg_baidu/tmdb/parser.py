@@ -160,8 +160,14 @@ class MediaParser:
         """
         Parse raw filename into structured metadata.
         """
-        base_name, ext = os.path.splitext(filename)
-        container = ext.lstrip(".").lower() or "mp4"
+        raw_base, raw_ext = os.path.splitext(filename)
+        candidate_ext = raw_ext.lower()
+        if candidate_ext in VIDEO_EXTENSIONS or candidate_ext in (".srt", ".ass", ".sup", ".nfo", ".zip", ".rar", ".7z"):
+            base_name = raw_base
+            container = candidate_ext.lstrip(".")
+        else:
+            base_name = filename
+            container = "mp4"
         is_video = cls.is_video_file(filename)
 
         cleaned_name = cls.clean_junk(base_name)

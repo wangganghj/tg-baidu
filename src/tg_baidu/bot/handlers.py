@@ -277,34 +277,52 @@ class BotHandlers:
             await status_msg.edit_text(f"搜索失败: {e}")
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process incoming messages to detect Baidu Pan share links."""
+        """Process incoming messages to detect Baidu Pan share links (including forwarded Telegram posts)."""
         user = update.effective_user
-        if not user or not self._is_user_allowed(user.id):
+        msg = update.message
+        if not user or not msg or not self._is_user_allowed(user.id):
             return
 
-        text = update.message.text
-        if not text:
+        # 1. Extract complete text from message, caption, and embedded hyperlinks
+        full_text = msg.text or msg.caption or ""
+        all_entities = list(msg.entities or []) + list(msg.caption_entities or [])
+        for ent in all_entities:
+            if ent.type == "text_link" and ent.url:
+                full_text += f"\n{ent.url}"
+
+        if not full_text:
             return
 
-        # 1. Parse Baidu share link
-        share_link = BaiduShareParser.parse(text)
+        # 2. Parse Baidu share link & extraction code
+        share_link = BaiduShareParser.parse(full_text)
         if not share_link:
             return  # Not a baidu share link message
 
         status_msg = await update.message.reply_text("🔍 检测到百度网盘分享链接，正在解析媒体信息...")
 
         try:
-            # 2. Extract media title from user text or query share content
+            # 3. Extract media title candidate from forwarded/complex message text
             import re
-            text_without_link = re.sub(r"https?://pan\.baidu\.com/[^\s]+", "", text).strip()
-            text_without_link = re.sub(r"(?:提取码|密码|码|pwd)[:：\s=]*[a-zA-Z0-9]{4}", "", text_without_link, flags=re.I).strip()
+            lines = [l.strip() for l in full_text.splitlines() if l.strip()]
+            candidate_titles = []
+            for line in lines:
+                if "baidu.com" in line.lower() or "pan.baidu" in line.lower():
+                    continue
+                if any(k in line for k in ("@", "频道", "群组", "关注", "交流", "http://", "https://")):
+                    continue
+                if any(k in line for k in ("简介", "介绍", "剧情", "夸克", "阿里", "迅雷", "115", "UC")):
+                    continue
+                # Strip leading tags (e.g. 资源名称：, 片名：, 剧名：)
+                clean_l = re.sub(r"^(?:资源名称|影视名称|片名|剧名|名称|标题)[:：\s]*", "", line).strip()
+                if clean_l:
+                    candidate_titles.append(clean_l)
 
-            raw_title = text_without_link
+            raw_title = candidate_titles[0] if candidate_titles else ""
             detected_type = "auto"
             detected_year = None
 
             if not raw_title:
-                # User sent bare link, inspect share content from Baidu
+                # If no clear title line in message, inspect share content from Baidu Netdisk
                 share_info = await self.baidu_client.get_share_content_info(share_link.clean_share_url, share_link.pwd)
                 if share_info and share_info.get("items"):
                     first_item = share_info["items"][0]
@@ -315,7 +333,7 @@ class BotHandlers:
                     raw_title = share_info.get("title", "")
 
             if not raw_title:
-                raw_title = text
+                raw_title = full_text
 
             clean_raw = raw_title.split("/")[-1]
             parsed_media = MediaParser.parse_filename(clean_raw)
