@@ -101,6 +101,14 @@ class TransferTaskManager:
             except Exception as e:
                 logger.error("Failed to send telegram notification: %s", e)
 
+    async def _log(self, task_id: str, message: str) -> None:
+        """Log message to console and database task record."""
+        logger.info("[Task %s] %s", task_id, message)
+        try:
+            await self.db.append_task_log(task_id, message)
+        except Exception as e:
+            logger.debug("Failed to append task log: %s", e)
+
     async def _worker_loop(self, worker_id: int) -> None:
         while self._running:
             try:
@@ -108,9 +116,11 @@ class TransferTaskManager:
                 task_id = task_data["task_id"]
                 user_id = task_data["telegram_user_id"]
                 try:
+                    await self._log(task_id, "🚀 任务从队列出队，开始执行...")
                     await self._process_task(task_data)
                 except Exception as e:
                     logger.exception("Task %s failed: %s", task_id, e)
+                    await self._log(task_id, f"❌ 任务失败: {e}")
                     await self.db.update_task_status(
                         task_id=task_id,
                         status="FAILED",
@@ -154,6 +164,7 @@ class TransferTaskManager:
 
         # 1. Staging directory: Save to temporary directory first
         temp_dir = f"/Media/Temp/{task_id}"
+        await self._log(task_id, f"📁 创建临时暂存目录: {temp_dir}")
         await self.baidu_client.ensure_dir(temp_dir)
 
         await self.db.update_task_status(task_id, status="PROCESSING", progress=0.1)
@@ -166,11 +177,13 @@ class TransferTaskManager:
         )
 
         # 2. Transfer shared files into the temporary directory
-        await self.baidu_client.transfer_share_files(
+        await self._log(task_id, f"⏳ 正在请求百度网盘转存分享链接: {share_url}")
+        transferred_items = await self.baidu_client.transfer_share_files(
             share_url=share_url,
             share_pwd=share_pwd,
             target_dir=temp_dir,
         )
+        await self._log(task_id, f"📦 百度网盘转存成功，共转存 {len(transferred_items)} 个顶层项目至临时目录")
 
         await self.db.update_task_status(task_id, status="PROCESSING", progress=0.35)
         await self._notify(
@@ -180,6 +193,7 @@ class TransferTaskManager:
         )
 
         # 3. Recursively list all files in the temporary directory
+        await self._log(task_id, "🔍 正在深度遍历扫描临时目录中的影视资源...")
         all_transferred_files = await self._list_all_recursive(temp_dir)
         video_files = [
             f for f in all_transferred_files if not f.isdir and MediaParser.is_video_file(f.server_filename)
@@ -191,6 +205,8 @@ class TransferTaskManager:
         total_files = len(video_files)
         if total_files == 0:
             raise ValueError(f"临时目录 '{temp_dir}' 中未找到可处理的文件。")
+
+        await self._log(task_id, f"📊 扫描完成: 找到 {len(all_transferred_files)} 项，其中可整理影视文件 {total_files} 个")
 
         await self.db.update_task_status(
             task_id,
@@ -237,6 +253,8 @@ class TransferTaskManager:
             detected_year = clean_search_parsed.year
             media_type = "tv" if is_tv_detected else clean_search_parsed.media_type
 
+            await self._log(task_id, f"🎬 智能目录分析: 原始资源名='{raw_title_to_search}', 识别类型={'电视剧 (TV)' if media_type == 'tv' else '电影 (Movie)'}, 搜索词='{detected_query}', 年份={detected_year or '未知'}")
+
             # Search TMDB with the real title extracted from disk
             if getattr(self.tmdb_client, "api_key", None):
                 try:
@@ -250,6 +268,7 @@ class TransferTaskManager:
                     if candidates:
                         tmdb = candidates[0]
                         media_type = tmdb.media_type
+                        await self._log(task_id, f"✨ TMDB 检索成功: 《{tmdb.title}》({tmdb.year}) [ID: {tmdb.id}, 评分: ⭐{tmdb.vote_average}]")
                     else:
                         tmdb = TMDBMediaResult(
                             id=0,
@@ -260,8 +279,10 @@ class TransferTaskManager:
                             overview="",
                             poster_url="",
                         )
+                        await self._log(task_id, f"⚠️ TMDB 未找到完全匹配项，使用本地提取名称: 《{detected_query}》")
                 except Exception as e:
                     logger.warning("Refined TMDB search failed: %s", e)
+                    await self._log(task_id, f"⚠️ TMDB 查询异常: {e}")
             else:
                 tmdb = TMDBMediaResult(
                     id=0,
@@ -272,6 +293,7 @@ class TransferTaskManager:
                     overview="",
                     poster_url="",
                 )
+                await self._log(task_id, f"ℹ️ 未配置 TMDB API Key，直接使用资源原名: 《{detected_query}》")
 
         # Re-evaluate target destination root according to final media_type
         if media_type == "tv":
@@ -287,7 +309,7 @@ class TransferTaskManager:
                 or self.config.media.movie_dir
             )
 
-        logger.info("Task %s classified as %s: %s (Target: %s)", task_id, media_type, tmdb.display_name, dest_root)
+        await self._log(task_id, f"🎯 确定最终归档目录: {dest_root}")
 
         # 5. Prepare TMDB episode metadata if TV show
         tv_episodes_cache: Dict[int, Dict[int, Any]] = {}
@@ -308,6 +330,7 @@ class TransferTaskManager:
                         language=user_settings.get("tmdb_language") or self.config.tmdb.language,
                     )
                     tv_episodes_cache[season] = ep_map
+                    await self._log(task_id, f"📋 成功拉取 Season {season} 的分集刮削元数据")
 
                 ep_info = tv_episodes_cache.get(season, {}).get(episode_num)
                 dest_full_path = PathFormatter.format_tv_path(
@@ -338,25 +361,33 @@ class TransferTaskManager:
                     "newname": dest_filename,
                 }
             )
-            renamed_summary.append(f"• `{vf.server_filename}`\n  ➡️ `{dest_full_path}`")
+            summary_line = f"• `{vf.server_filename}` ➡️ `{dest_full_path}`"
+            renamed_summary.append(summary_line)
+            await self._log(task_id, f"🏷️ 路径规划: {vf.server_filename} ➡️ {dest_full_path}")
 
         # 6. Execute batch move & rename from temporary directory into destination
         await self.db.update_task_status(task_id, status="PROCESSING", progress=0.75)
         if move_operations:
+            await self._log(task_id, f"🔄 开始执行云端文件移动与重命名 (共 {len(move_operations)} 项)...")
             await self.baidu_client.batch_move_and_rename(move_operations)
+            await self._log(task_id, f"✅ 云端文件移动与重命名完成")
 
         # 7. Cleanup temporary directory
         if self.config.media.cleanup_temp_dirs:
             try:
+                await self._log(task_id, f"🧹 清理临时目录: {temp_dir}")
                 await self.baidu_client.delete_file(temp_dir)
-                logger.info("Cleaned up temp directory: %s", temp_dir)
+                await self._log(task_id, "🧹 临时目录清理成功")
             except Exception as e:
                 logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
+                await self._log(task_id, f"⚠️ 临时目录清理提示: {e}")
 
         # 8. Complete task
         summary_text = "\n".join(renamed_summary[:10])
         if len(renamed_summary) > 10:
             summary_text += f"\n... 以及其他 {len(renamed_summary) - 10} 个文件"
+
+        await self._log(task_id, f"🎉 任务已圆满完成！共成功整理归档 {total_files} 个文件至 {dest_root}")
 
         await self.db.update_task_status(
             task_id=task_id,

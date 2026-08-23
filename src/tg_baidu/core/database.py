@@ -96,11 +96,18 @@ class Database:
                     processed_files INTEGER DEFAULT 0,
                     result_summary TEXT,
                     error_message TEXT,
+                    logs TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            # Add logs column if upgrading from older schema
+            try:
+                await db.execute("ALTER TABLE tasks ADD COLUMN logs TEXT")
+            except Exception:
+                pass
+
             await db.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
@@ -406,6 +413,26 @@ class Database:
             )
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def append_task_log(self, task_id: str, message: str) -> None:
+        """Append a timestamped log line to a task."""
+        now = time.time()
+        time_str = time.strftime("%H:%M:%S")
+        log_entry = f"[{time_str}] {message}"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE tasks
+                SET logs = CASE
+                    WHEN logs IS NULL OR logs = '' THEN ?
+                    ELSE logs || char(10) || ?
+                END,
+                updated_at = ?
+                WHERE task_id = ?
+                """,
+                (log_entry, log_entry, now, task_id),
+            )
+            await db.commit()
 
     async def delete_baidu_token(self, user_identifier: str = "default") -> None:
         async with aiosqlite.connect(self.db_path) as db:

@@ -721,29 +721,79 @@
         </div>
     </div>
 
-    <!-- Task Detail Modal -->
+    <!-- Task Detail Modal with Real-time Logs -->
     <div x-show="selectedTask" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" x-cloak>
-        <div @click.away="selectedTask = null" class="bg-slate-800 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+        <div @click.away="selectedTask = null" class="bg-slate-800 border border-slate-700 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3 flex-shrink-0">
                 <h3 class="font-bold text-lg text-white flex items-center space-x-2">
                     <span>🎬</span>
-                    <span x-text="selectedTask ? (selectedTask.tmdb_title + (selectedTask.year ? ' (' + selectedTask.year + ')' : '')) : ''"></span>
+                    <span x-text="selectedTask ? (selectedTask.tmdb_title + (selectedTask.year ? ' (' + selectedTask.year + ')' : '')) : '任务详情'"></span>
                 </h3>
-                <button @click="selectedTask = null" class="text-slate-400 hover:text-white text-xl">&times;</button>
+                <div class="flex items-center space-x-2">
+                    <button @click="refreshTaskDetail()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-xl flex items-center space-x-1.5 transition-colors">
+                        <span>🔄</span>
+                        <span>刷新日志</span>
+                    </button>
+                    <button @click="selectedTask = null" class="text-slate-400 hover:text-white text-2xl ml-2">&times;</button>
+                </div>
             </div>
 
             <template x-if="selectedTask">
-                <div class="space-y-4 text-xs">
-                    <div class="grid grid-cols-2 gap-3 bg-slate-900 p-3 rounded-xl">
-                        <div><span class="text-slate-500">任务 ID:</span> <span class="font-mono text-slate-200" x-text="selectedTask.task_id"></span></div>
-                        <div><span class="text-slate-500">状态:</span> <strong class="text-sky-400" x-text="selectedTask.status"></strong></div>
-                        <div class="col-span-2"><span class="text-slate-500">分享链接:</span> <span class="font-mono text-slate-300 truncate block" x-text="selectedTask.share_url"></span></div>
+                <div class="space-y-4 text-xs flex-1 overflow-y-auto pr-1">
+                    <!-- Task Summary Grid -->
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-slate-900/90 p-3.5 rounded-xl border border-slate-700/60">
+                        <div>
+                            <span class="text-slate-400 block text-[11px]">任务 ID</span>
+                            <span class="font-mono text-white font-medium truncate block" x-text="selectedTask.task_id"></span>
+                        </div>
+                        <div>
+                            <span class="text-slate-400 block text-[11px]">当前状态</span>
+                            <span class="font-semibold px-2 py-0.5 rounded-md inline-block text-[11px] mt-0.5"
+                                  :class="{
+                                      'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30': selectedTask.status === 'COMPLETED',
+                                      'bg-sky-500/20 text-sky-300 border border-sky-500/30 animate-pulse': selectedTask.status === 'PROCESSING',
+                                      'bg-amber-500/20 text-amber-300 border border-amber-500/30': selectedTask.status === 'PENDING',
+                                      'bg-rose-500/20 text-rose-300 border border-rose-500/30': selectedTask.status === 'FAILED',
+                                  }"
+                                  x-text="selectedTask.status"></span>
+                        </div>
+                        <div>
+                            <span class="text-slate-400 block text-[11px]">媒体类别 / 进度</span>
+                            <span class="text-slate-200 mt-0.5 block font-medium" x-text="(selectedTask.media_type === 'tv' ? '📺 电视剧' : '🎬 电影') + ' · ' + (selectedTask.processed_files || 0) + '/' + (selectedTask.total_files || 0) + ' 集'"></span>
+                        </div>
+                        <div>
+                            <span class="text-slate-400 block text-[11px]">提交时间</span>
+                            <span class="text-slate-300 mt-0.5 block" x-text="formatTime(selectedTask.created_at)"></span>
+                        </div>
+                        <div class="col-span-2 sm:col-span-4 pt-1.5 border-t border-slate-800">
+                            <span class="text-slate-400 block text-[11px] mb-0.5">百度网盘分享链接</span>
+                            <span class="font-mono text-slate-300 break-all select-all block bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800"
+                                  x-text="selectedTask.share_url + (selectedTask.share_pwd ? ' (提取码: ' + selectedTask.share_pwd + ')' : '')"></span>
+                        </div>
                     </div>
 
+                    <!-- Step-by-Step Task Logs -->
                     <div>
-                        <h4 class="font-semibold text-slate-200 mb-2">📂 重命名与归档路径详情:</h4>
-                        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-60 overflow-y-auto"
-                             x-text="selectedTask.result_summary || (selectedTask.error_message ? '❌ 错误: ' + selectedTask.error_message : '处理中...')">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <h4 class="font-semibold text-sky-400 flex items-center space-x-1.5 text-xs">
+                                <span>📜</span>
+                                <span>任务执行实时日志 (Task Execution Logs)</span>
+                            </h4>
+                            <span class="text-[11px] text-slate-400 font-mono" x-show="selectedTask.status === 'PROCESSING'">实时更新中 🟢</span>
+                        </div>
+                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400/90 whitespace-pre-wrap max-h-72 overflow-y-auto leading-relaxed selection:bg-sky-500 selection:text-white"
+                             x-text="selectedTask.logs || '⏳ 暂无实时日志记录...'">
+                        </div>
+                    </div>
+
+                    <!-- Final Renamed Paths / Summary -->
+                    <div x-show="selectedTask.result_summary || selectedTask.error_message">
+                        <h4 class="font-semibold text-slate-200 mb-1.5 flex items-center space-x-1.5 text-xs">
+                            <span>📂</span>
+                            <span>最终重命名与归档路径 (Archive Results):</span>
+                        </h4>
+                        <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-48 overflow-y-auto"
+                             x-text="selectedTask.result_summary || ('❌ 错误信息: ' + selectedTask.error_message)">
                         </div>
                     </div>
                 </div>
@@ -1057,8 +1107,27 @@
                     } catch (e) {}
                 },
 
-                showTaskModal(task) {
+                async showTaskModal(task) {
                     this.selectedTask = task;
+                    try {
+                        const res = await fetch(`/api/tasks/${task.task_id}`);
+                        if (res.ok) {
+                            this.selectedTask = await res.json();
+                        }
+                    } catch (e) {}
+                },
+
+                async refreshTaskDetail() {
+                    if (!this.selectedTask) return;
+                    try {
+                        const res = await fetch(`/api/tasks/${this.selectedTask.task_id}`);
+                        if (res.ok) {
+                            this.selectedTask = await res.json();
+                            this.showToast('✅ 任务日志已刷新');
+                        }
+                    } catch (e) {
+                        this.showToast('❌ 刷新日志失败', 'error');
+                    }
                 },
 
                 async deleteTask(taskId) {
