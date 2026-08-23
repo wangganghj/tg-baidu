@@ -277,19 +277,34 @@ class BotHandlers:
             await status_msg.edit_text(f"搜索失败: {e}")
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process incoming messages to detect Baidu Pan share links (including forwarded Telegram posts)."""
+        """Process incoming messages to detect Baidu Pan share links (including forwarded Telegram posts, rich text, and inline buttons)."""
         user = update.effective_user
         msg = update.message
         if not user or not msg or not self._is_user_allowed(user.id):
             return
 
-        # 1. Extract complete text from message, caption, and embedded hyperlinks
-        full_text = msg.text or msg.caption or ""
-        all_entities = list(msg.entities or []) + list(msg.caption_entities or [])
-        for ent in all_entities:
-            if ent.type == "text_link" and ent.url:
-                full_text += f"\n{ent.url}"
+        # 1. Extract complete text from message, caption, embedded hyperlinks, inline buttons, and replied messages
+        msg_sources = [msg]
+        if msg.reply_to_message:
+            msg_sources.append(msg.reply_to_message)
 
+        text_parts = []
+        for m in msg_sources:
+            if m.text:
+                text_parts.append(m.text)
+            if m.caption:
+                text_parts.append(m.caption)
+            all_entities = list(m.entities or []) + list(m.caption_entities or [])
+            for ent in all_entities:
+                if ent.type == "text_link" and ent.url:
+                    text_parts.append(ent.url)
+            if m.reply_markup and hasattr(m.reply_markup, "inline_keyboard"):
+                for row in m.reply_markup.inline_keyboard:
+                    for btn in row:
+                        if getattr(btn, "url", None):
+                            text_parts.append(f"{btn.text or ''} {btn.url}")
+
+        full_text = "\n".join(text_parts).strip()
         if not full_text:
             return
 

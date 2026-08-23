@@ -62,3 +62,36 @@ def test_parse_multiline_resource_post():
     assert parsed is not None
     assert parsed.surl == "925dmULsLd8tafD0TW8Vew"
     assert parsed.pwd == "qxn3"
+
+
+def test_parse_markdown_link():
+    md_post = """
+    🎬 *藏锋* (2026) 4K
+    📥 下载链接: [百度网盘](https://pan.baidu.com/s/1S31dvBIG1xBKEQaIrI6Eqw?pwd=zk77)
+    """
+    parsed = BaiduShareParser.parse(md_post)
+    assert parsed is not None
+    assert parsed.surl == "S31dvBIG1xBKEQaIrI6Eqw"
+    assert parsed.pwd == "zk77"
+
+
+def test_parse_markdownv2_link():
+    mdv2_post = r"""
+    🎬 \*藏锋\* \(2026\) 4K
+    📥 下载链接: [百度网盘](https://pan\.baidu\.com/s/1S31dvBIG1xBKEQaIrI6Eqw?pwd=zk77)
+    """
+    parsed = BaiduShareParser.parse(mdv2_post)
+    assert parsed is not None
+    assert parsed.surl == "S31dvBIG1xBKEQaIrI6Eqw"
+    assert parsed.pwd == "zk77"
+
+
+def test_parse_html_link():
+    html_post = """
+    <b>🎬 藏锋 (2026) 4K</b>
+    <a href="https://pan.baidu.com/share/init?surl=S31dvBIG1xBKEQaIrI6Eqw&amp;pwd=zk77">👉 点击转存百度网盘</a>
+    """
+    parsed = BaiduShareParser.parse(html_post)
+    assert parsed is not None
+    assert parsed.surl == "S31dvBIG1xBKEQaIrI6Eqw"
+    assert parsed.pwd == "zk77"
