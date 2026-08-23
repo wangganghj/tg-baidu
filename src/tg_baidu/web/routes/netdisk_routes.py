@@ -76,10 +76,15 @@ async def set_target_dir(
     clean_path = "/" + payload.path.strip("/")
     if payload.dir_type == "movie":
         config.media.movie_dir = clean_path
+        await db.save_system_setting("media_movie_dir", clean_path)
     elif payload.dir_type == "tv":
         config.media.tv_dir = clean_path
+        await db.save_system_setting("media_tv_dir", clean_path)
     else:
         raise HTTPException(status_code=400, detail="Invalid dir_type. Must be 'movie' or 'tv'.")
+
+    # Persist updated config into data/config.yaml
+    config.save_yaml("data/config.yaml")
 
     # Automatically ensure directory exists on Baidu Netdisk
     try:

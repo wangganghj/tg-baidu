@@ -106,6 +106,10 @@ async def save_cookie(payload: CookieAuthRequest, request: Request) -> Dict[str,
     try:
         # Save to database
         await db.save_baidu_cookie(cookie=cookie_str, bduss=bduss, stoken=stoken)
+        await db.save_system_setting("baidu_cookie", cookie_str)
+        await db.save_system_setting("baidu_bduss", bduss)
+        await db.save_system_setting("baidu_stoken", stoken)
+        config.save_yaml("data/config.yaml")
 
         # Verify connectivity
         uinfo = await baidu_client.get_user_info()
@@ -135,8 +139,13 @@ async def logout(request: Request) -> Dict[str, bool]:
     baidu_client = request.app.state.baidu_client
 
     await db.delete_baidu_token()
+    await db.save_system_setting("baidu_cookie", "")
+    await db.save_system_setting("baidu_bduss", "")
+    await db.save_system_setting("baidu_stoken", "")
+
     config.baidu.cookie = ""
     config.baidu.bduss = ""
     config.baidu.stoken = ""
     baidu_client.set_cookie("")
+    config.save_yaml("data/config.yaml")
     return {"success": True}
