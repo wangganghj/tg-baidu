@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..baidu.auth import BaiduAuthManager
@@ -24,6 +25,7 @@ from .routes import auth_routes, netdisk_routes, settings_routes, tasks_routes
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Public paths that never require password authentication
@@ -35,6 +37,7 @@ PUBLIC_PATHS = {
     "/docs",
     "/openapi.json",
     "/favicon.ico",
+    "/favicon.svg",
 }
 
 
@@ -94,11 +97,23 @@ def create_web_app(
 
         return await call_next(request)
 
+    # Static Files Mounting
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
     # Register Routers
     app.include_router(auth_routes.router)
     app.include_router(netdisk_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(tasks_routes.router)
+
+    @app.get("/favicon.svg")
+    @app.get("/favicon.ico")
+    async def favicon():
+        favicon_file = STATIC_DIR / "favicon.svg"
+        if favicon_file.is_file():
+            return Response(content=favicon_file.read_bytes(), media_type="image/svg+xml")
+        return Response(status_code=404)
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
